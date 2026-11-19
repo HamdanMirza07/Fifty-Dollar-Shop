@@ -1,0 +1,132 @@
+@import "tailwindcss";
+
+@theme {
+  --color-obsidian: #0B0F19;
+  --color-alabaster: #F4F5F8;
+  --color-stone: #ECEEF2;
+  --color-hairline: #E2E5EC;
+  --color-copper: #E54826;
+  --color-copper-hover: #CC3B1C;
+  --color-navy: #122B5C;
+  --color-emerald: #16A34A;
+  --color-ink: #0B0F19;
+  --color-muted: #5A6275;
+  --font-heading: "Outfit", system-ui, -apple-system, sans-serif;
+  --font-body: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-body);
+    color: #0B0F19;
+    background-color: #FFFFFF;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: var(--font-body);
+    font-weight: 400;
+    font-size: 15px;
+    line-height: 1.6;
+    color: #0B0F19;
+    background-color: #FFFFFF;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, .font-heading {
+    font-family: var(--font-heading);
+    letter-spacing: -0.025em;
+  }
+}
+
+.type-h1 {
+  font-family: var(--font-heading);
+  font-weight: 800;
+  font-size: clamp(2.25rem, 4.2vw, 3.85rem);
+  line-height: 1.05;
+  letter-spacing: -0.038em;
+  text-wrap: balance;
+}
+
+.type-h2 {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: clamp(1.6rem, 2.7vw, 2.45rem);
+  line-height: 1.13;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.type-product-title {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.35;
+  letter-spacing: -0.015em;
+}
+
+.type-price {
+  font-family: var(--font-heading);
+  font-weight: 800;
+  font-size: 18px;
+  line-height: 1.15;
+  color: #E54826;
+  font-variant-numeric: tabular-nums;
+}
+
+.type-body {
+  font-family: var(--font-body);
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.type-button {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.bg-studio-grid {
+  background-image: radial-gradient(rgba(11, 15, 25, 0.08) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+@media (min-width: 768px) {
+  .type-product-title {
+    font-size: 16px;
+  }
+  .type-price {
+    font-size: 19px;
+  }
+  .type-body {
+    font-size: 15.5px;
+  }
+  .type-button {
+    font-size: 14.5px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .type-product-title {
+    font-size: 16.5px;
+  }
+  .type-price {
+    font-size: 20px;
+  }
+  .type-body {
+    font-size: 16px;
+  }
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

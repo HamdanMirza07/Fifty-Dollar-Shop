@@ -1,0 +1,6 @@
+{
+  "name": "FiftyDollarShop.com",
+  "description": "Everything $50 Only — USA's Hot Selling Products, Now Half Price. Live WooCommerce store with free USA shipping and secure checkout.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
