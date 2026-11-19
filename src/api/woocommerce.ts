@@ -58,10 +58,20 @@ async function apiFetch<T>(
 
   saveSessionHeaders(response);
 
-  const data = await response.json();
+  const rawText = await response.text();
+  let data: unknown = null;
+  try {
+    data = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    throw new Error(
+      `Store API returned an unexpected response (HTTP ${response.status}).`
+    );
+  }
+
   if (!response.ok) {
+    const obj = data && typeof data === 'object' ? (data as Record<string, unknown>) : null;
     const message =
-      (data && typeof data.message === 'string' && data.message) ||
+      (obj && typeof obj.message === 'string' && obj.message) ||
       `Request failed with status ${response.status}`;
     throw new Error(message);
   }
