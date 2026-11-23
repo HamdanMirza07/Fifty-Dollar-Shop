@@ -23,6 +23,8 @@ import { US_STATES, decodeHtmlEntities, formatMinorPrice } from '../utils/format
 
 interface CheckoutViewProps {
   cart: WcCart | null;
+  hydratingMetaCheckout?: boolean;
+  metaCouponCode?: string | null;
   onBackToShop: () => void;
   onCartUpdated: (cart: WcCart) => void;
   onOrderCompleted: () => void;
@@ -33,6 +35,8 @@ const inputClass =
 
 export const CheckoutView: React.FC<CheckoutViewProps> = ({
   cart,
+  hydratingMetaCheckout = false,
+  metaCouponCode = null,
   onBackToShop,
   onCartUpdated,
   onOrderCompleted,
@@ -49,7 +53,9 @@ export const CheckoutView: React.FC<CheckoutViewProps> = ({
   const [city, setCity] = useState(existingShipping?.city || '');
   const [state, setState] = useState(existingShipping?.state || 'CA');
   const [postcode, setPostcode] = useState(existingShipping?.postcode || '');
-  const [customerNote, setCustomerNote] = useState('');
+  const [customerNote, setCustomerNote] = useState(
+    metaCouponCode ? `Coupon: ${metaCouponCode}` : ''
+  );
 
   const paymentMethods = cart?.payment_methods ?? [];
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(
@@ -194,6 +200,25 @@ export const CheckoutView: React.FC<CheckoutViewProps> = ({
               </button>
             </div>
           </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (hydratingMetaCheckout && items.length === 0) {
+    return (
+      <section className="bg-[#F4F5F8] py-14">
+        <div className="max-w-xl mx-auto px-4 text-center bg-white rounded-3xl border border-[#E2E5EC] p-10 space-y-3">
+          <Loader2
+            className="w-7 h-7 animate-spin text-[#0B0F19] mx-auto"
+            aria-hidden="true"
+          />
+          <h1 className="font-heading font-bold text-[22px] text-[#0B0F19]">
+            Loading Your Selected Item...
+          </h1>
+          <p className="type-body text-[#5A6275]">
+            Syncing your exact variant and quantity directly from Fifty Dollar Shop inventory.
+          </p>
         </div>
       </section>
     );

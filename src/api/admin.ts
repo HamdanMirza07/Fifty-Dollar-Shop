@@ -20,6 +20,10 @@ export function setAdminBearerToken(token: string) {
   inMemoryAdminToken = token;
 }
 
+export function getAdminBearerToken(): string {
+  return inMemoryAdminToken;
+}
+
 export function clearAdminBearerToken() {
   inMemoryAdminToken = '';
 }

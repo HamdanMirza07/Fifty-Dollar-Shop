@@ -10,6 +10,7 @@ import {
 import type {
   AdminOrder,
   AdminSection,
+  MetaProductSyncStatusRecord,
   MetaSyncSummary,
   ProductPlacement,
 } from '../../types/admin';
@@ -21,6 +22,7 @@ interface AdminOverviewTabProps {
   categories: WcCategory[];
   orders: AdminOrder[];
   placements: Record<number, ProductPlacement>;
+  metaSyncStatuses: Record<string, MetaProductSyncStatusRecord>;
   syncedAt: string | null;
   loadingCatalog: boolean;
   onRefreshCatalog: () => void;
@@ -35,6 +37,7 @@ export const AdminOverviewTab: React.FC<AdminOverviewTabProps> = ({
   categories,
   orders,
   placements,
+  metaSyncStatuses,
   syncedAt,
   loadingCatalog,
   onRefreshCatalog,
@@ -71,11 +74,27 @@ export const AdminOverviewTab: React.FC<AdminOverviewTabProps> = ({
       .filter((o) => o.status !== 'cancelled')
       .reduce((acc, o) => acc + (Number(o.total) || 0), 0);
 
+    let syncedMeta = 0;
+    let errorMeta = 0;
+    let pendingMeta = 0;
+
+    for (const p of products) {
+      const rec = metaSyncStatuses[String(p.id)];
+      if (rec?.status === 'synced') syncedMeta += 1;
+      else if (rec?.status === 'error') errorMeta += 1;
+      else if (!placements[p.id]?.hidden) pendingMeta += 1;
+    }
+
     const metaSummary: MetaSyncSummary = {
-      synced: 0,
-      pending: products.filter((p) => !placements[p.id]?.hidden).length,
-      errors: 0,
-      statusLabel: 'Ready to Connect',
+      synced: syncedMeta,
+      pending: pendingMeta,
+      errors: errorMeta,
+      statusLabel:
+        errorMeta > 0
+          ? `${errorMeta} Sync Error${errorMeta === 1 ? '' : 's'}`
+          : syncedMeta > 0
+            ? 'Live Sync Active'
+            : 'Ready to Sync',
     };
 
     return {
@@ -92,7 +111,7 @@ export const AdminOverviewTab: React.FC<AdminOverviewTabProps> = ({
       totalRevenue,
       metaSummary,
     };
-  }, [products, categories, orders, placements]);
+  }, [products, categories, orders, placements, metaSyncStatuses]);
 
   const formattedSyncTime = syncedAt
     ? new Date(syncedAt).toLocaleTimeString([], {

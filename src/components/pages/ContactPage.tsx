@@ -4,6 +4,9 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock,
+  ExternalLink,
+  Facebook,
+  Instagram,
   Loader2,
   Mail,
   MapPin,
@@ -16,6 +19,9 @@ import { submitContactInquiry } from '../../api/woocommerce';
 
 interface ContactPageProps {
   onNavigate: (page: AppPage) => void;
+  supportEmail?: string;
+  instagramUrl?: string;
+  facebookUrl?: string;
 }
 
 const TOPICS = [
@@ -48,7 +54,12 @@ const SUPPORT_FAQS = [
 const inputClass =
   'w-full h-11 px-3.5 rounded-xl border border-[#E2E5EC] bg-[#F4F5F8] text-[14px] text-[#0B0F19] placeholder:text-[#5A6275]/70 focus:outline-none focus:border-[#0B0F19] focus:bg-white transition-colors';
 
-export const ContactPage: React.FC<ContactPageProps> = ({ onNavigate }) => {
+export const ContactPage: React.FC<ContactPageProps> = ({
+  onNavigate,
+  supportEmail = 'support@fiftydollarshop.com',
+  instagramUrl = 'https://www.instagram.com/fifty_dollar_shop/',
+  facebookUrl = 'https://www.facebook.com/fiftydollarshop',
+}) => {
   const [selectedTopic, setSelectedTopic] = useState<string>(TOPICS[0]);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -110,10 +121,10 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onNavigate }) => {
               Direct Email
             </p>
             <a
-              href="mailto:support@fiftydollarshop.com"
+              href={`mailto:${supportEmail}`}
               className="text-[13px] text-[#5A6275] hover:text-[#E54826] break-all transition-colors"
             >
-              support@fiftydollarshop.com
+              {supportEmail}
             </a>
           </div>
         </div>
@@ -391,6 +402,50 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onNavigate }) => {
               </button>
             </div>
           </div>
+
+          {(instagramUrl || facebookUrl) && (
+            <div className="bg-white rounded-3xl border border-[#E2E5EC] p-6 space-y-3">
+              <p className="text-[12px] font-mono font-semibold text-[#122B5C]">
+                Official Social Channels
+              </p>
+              <h3 className="font-heading font-bold text-[16px] text-[#0B0F19]">
+                Follow Fifty Dollar Shop
+              </h3>
+              <p className="text-[13.5px] text-[#5A6275]">
+                See new $50 USA drops, restock alerts, and product demos on our official pages.
+              </p>
+              <div className="flex flex-col sm:flex-row lg:flex-col gap-2.5 pt-1">
+                {instagramUrl && (
+                  <a
+                    href={instagramUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-2xl bg-[#F4F5F8] border border-[#E2E5EC] hover:bg-[#0B0F19] hover:text-white hover:border-[#0B0F19] text-[#0B0F19] text-[13.5px] font-semibold transition-colors"
+                  >
+                    <span className="inline-flex items-center gap-2.5">
+                      <Instagram className="w-4 h-4 shrink-0" aria-hidden="true" />
+                      <span>Instagram · @fifty_dollar_shop</span>
+                    </span>
+                    <ExternalLink className="w-3.5 h-3.5 opacity-70 shrink-0" aria-hidden="true" />
+                  </a>
+                )}
+                {facebookUrl && (
+                  <a
+                    href={facebookUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-2xl bg-[#F4F5F8] border border-[#E2E5EC] hover:bg-[#0B0F19] hover:text-white hover:border-[#0B0F19] text-[#0B0F19] text-[13.5px] font-semibold transition-colors"
+                  >
+                    <span className="inline-flex items-center gap-2.5">
+                      <Facebook className="w-4 h-4 shrink-0" aria-hidden="true" />
+                      <span>Facebook · Fifty Dollar Shop</span>
+                    </span>
+                    <ExternalLink className="w-3.5 h-3.5 opacity-70 shrink-0" aria-hidden="true" />
+                  </a>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

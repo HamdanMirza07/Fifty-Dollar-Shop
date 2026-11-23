@@ -63,6 +63,7 @@ export interface StoredOrderRecord {
 }
 
 interface AdminPersistenceData {
+  sessionSecret?: string;
   claimedPasswordHash?: string;
   claimedPasswordSalt?: string;
   claimedAt?: string;
@@ -72,26 +73,94 @@ interface AdminPersistenceData {
   orderStatusOverrides: Record<string, AdminOrderStatus>;
 }
 
+const DEFAULT_INSTAGRAM_URL = 'https://www.instagram.com/fifty_dollar_shop/';
+const DEFAULT_FACEBOOK_URL = 'https://www.facebook.com/fiftydollarshop';
+
 const DEFAULT_SETTINGS: StorefrontSettingsRecord = {
   supportEmail: 'support@fiftydollarshop.com',
   announcementText:
     'All-America Flat $50 Drop · Free Tracked USA Shipping · 30-Day Guarantee',
-  instagramUrl: 'https://www.instagram.com/',
-  facebookUrl: 'https://www.facebook.com/',
+  instagramUrl: DEFAULT_INSTAGRAM_URL,
+  facebookUrl: DEFAULT_FACEBOOK_URL,
   updatedAt: new Date().toISOString(),
 };
 
 const STORE_FILE = path.join(os.tmpdir(), 'fds-admin-state-v1.json');
 
-// Session signing key (process.env override or strong runtime ephemeral fallback)
-const SESSION_SIGNING_SECRET =
-  (process.env.ADMIN_SESSION_SECRET || '').trim() ||
-  crypto.randomBytes(32).toString('hex');
-
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12; // 12 hours
 export const ADMIN_COOKIE_NAME = 'fds_admin_session';
 
 let memoryState: AdminPersistenceData | null = null;
+let cachedSessionSigningKey: string | null = null;
+
+function deriveDeterministicSigningKey(label: string, parts: string[]): string {
+  return crypto
+    .createHash('sha256')
+    .update(`${label}:${parts.join('|')}`, 'utf8')
+    .digest('hex');
+}
+
+/**
+ * Resolves a consistent 256-bit HMAC signing key across all concurrent
+ * serverless instances (e.g., Vercel Functions) and local Node restarts.
+ * Never hardcoded and never exposed to the browser.
+ */
+function getSessionSigningSecret(): string {
+  const explicitSecret = (process.env.ADMIN_SESSION_SECRET || '').trim();
+  if (explicitSecret.length > 0) {
+    return deriveDeterministicSigningKey('fds-admin-session-explicit-v1', [
+      explicitSecret,
+    ]);
+  }
+
+  // Primary server-side secrets & Vercel project identity (shared across all instances)
+  const persistentServerParts = [
+    process.env.ADMIN_SECRET_TOKEN,
+    process.env.WC_CONSUMER_SECRET,
+    process.env.WC_CONSUMER_KEY,
+    process.env.STRIPE_SECRET_KEY,
+    process.env.VERCEL_PROJECT_ID,
+    process.env.VERCEL_ORG_ID,
+  ]
+    .map((v) => (v || '').trim())
+    .filter((v) => v.length > 0);
+
+  if (persistentServerParts.length > 0) {
+    return deriveDeterministicSigningKey(
+      'fds-admin-session-server-v2',
+      persistentServerParts
+    );
+  }
+
+  // Fallback for Vercel deployments without custom env vars configured yet
+  const runtimeIdentityParts = [
+    process.env.VERCEL_DEPLOYMENT_ID,
+    process.env.VERCEL_GIT_COMMIT_SHA,
+    process.env.AWS_LAMBDA_FUNCTION_NAME,
+  ]
+    .map((v) => (v || '').trim())
+    .filter((v) => v.length > 0);
+
+  if (runtimeIdentityParts.length > 0) {
+    return deriveDeterministicSigningKey(
+      'fds-admin-session-runtime-v2',
+      runtimeIdentityParts
+    );
+  }
+
+  // Pure local Node dev with zero env vars: persist once in local temp state
+  if (cachedSessionSigningKey) return cachedSessionSigningKey;
+  const state = loadState();
+  if (state.sessionSecret && state.sessionSecret.length >= 32) {
+    cachedSessionSigningKey = state.sessionSecret;
+    return cachedSessionSigningKey;
+  }
+  const generated = crypto.randomBytes(32).toString('hex');
+  state.sessionSecret = generated;
+  saveState(state);
+  cachedSessionSigningKey = generated;
+  return generated;
+}
 
 function createDefaultState(): AdminPersistenceData {
   return {
@@ -109,6 +178,10 @@ function loadState(): AdminPersistenceData {
       const raw = fs.readFileSync(STORE_FILE, 'utf8');
       const parsed = JSON.parse(raw) as Partial<AdminPersistenceData>;
       memoryState = {
+        sessionSecret:
+          typeof parsed.sessionSecret === 'string'
+            ? parsed.sessionSecret
+            : undefined,
         claimedPasswordHash:
           typeof parsed.claimedPasswordHash === 'string'
             ? parsed.claimedPasswordHash
@@ -128,6 +201,16 @@ function loadState(): AdminPersistenceData {
           ...(parsed.settings && typeof parsed.settings === 'object'
             ? parsed.settings
             : {}),
+          instagramUrl:
+            parsed.settings?.instagramUrl &&
+            parsed.settings.instagramUrl !== 'https://www.instagram.com/'
+              ? parsed.settings.instagramUrl
+              : DEFAULT_INSTAGRAM_URL,
+          facebookUrl:
+            parsed.settings?.facebookUrl &&
+            parsed.settings.facebookUrl !== 'https://www.facebook.com/'
+              ? parsed.settings.facebookUrl
+              : DEFAULT_FACEBOOK_URL,
         },
         orders: Array.isArray(parsed.orders) ? parsed.orders : [],
         orderStatusOverrides:
@@ -241,7 +324,7 @@ interface SessionPayload {
 
 function signPayload(payloadB64: string): string {
   return crypto
-    .createHmac('sha256', SESSION_SIGNING_SECRET)
+    .createHmac('sha256', getSessionSigningSecret())
     .update(payloadB64)
     .digest('base64url');
 }

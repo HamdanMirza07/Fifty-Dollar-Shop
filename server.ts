@@ -5,6 +5,10 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createApiRouter } from './api/index.ts';
+import {
+  handleMetaRemoveProductRequest,
+  handleMetaSyncProductRequest,
+} from './server/metaCatalog.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,7 +18,7 @@ const PORT = Number(process.env.PORT || 3000);
 async function startServer() {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '64kb' }));
+  app.use(express.json({ limit: '2mb' }));
 
   // Security headers (iframe-compatible)
   app.use((_req: Request, res: Response, next: NextFunction) => {
@@ -24,6 +28,10 @@ async function startServer() {
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     next();
   });
+
+  // Meta Commerce Catalog & Meta Shop server-side sync endpoints
+  app.post('/api/meta/sync-product', handleMetaSyncProductRequest);
+  app.post('/api/meta/remove-product', handleMetaRemoveProductRequest);
 
   // Mount shared API router (identical behavior across AI Studio, Node, and Vercel)
   app.use('/api', createApiRouter());

@@ -22,8 +22,8 @@ interface FooterProps {
 export const Footer: React.FC<FooterProps> = ({
   onNavigate,
   supportEmail = 'support@fiftydollarshop.com',
-  instagramUrl = 'https://www.instagram.com/',
-  facebookUrl = 'https://www.facebook.com/',
+  instagramUrl = 'https://www.instagram.com/fifty_dollar_shop/',
+  facebookUrl = 'https://www.facebook.com/fiftydollarshop',
 }) => {
   const [alertEmail, setAlertEmail] = useState('');
   const [subscribed, setSubscribed] = useState(false);

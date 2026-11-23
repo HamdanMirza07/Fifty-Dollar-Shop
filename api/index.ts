@@ -924,20 +924,27 @@ export function createApiRouter(): Router {
     res.setHeader('Set-Cookie', attrs.join('; '));
   }
 
-  function extractAdminToken(req: Request): {
-    token: string;
+  function authenticateAdminRequest(req: Request): {
+    session: NonNullable<ReturnType<typeof verifyAdminSessionToken>>;
     viaCookie: boolean;
-  } {
+  } | null {
     const authHeader = String(req.headers.authorization || '').trim();
     if (authHeader.toLowerCase().startsWith('bearer ')) {
       const bearer = authHeader.slice(7).trim();
-      if (bearer) return { token: bearer, viaCookie: false };
+      const bearerSession = verifyAdminSessionToken(bearer);
+      if (bearerSession) {
+        return { session: bearerSession, viaCookie: false };
+      }
     }
     const cookies = parseCookieHeader(req.headers.cookie);
-    if (cookies[ADMIN_COOKIE_NAME]) {
-      return { token: cookies[ADMIN_COOKIE_NAME], viaCookie: true };
+    const cookieToken = cookies[ADMIN_COOKIE_NAME];
+    if (cookieToken) {
+      const cookieSession = verifyAdminSessionToken(cookieToken);
+      if (cookieSession) {
+        return { session: cookieSession, viaCookie: true };
+      }
     }
-    return { token: '', viaCookie: false };
+    return null;
   }
 
   function verifySameOriginOrHeader(req: Request): boolean {
@@ -956,9 +963,8 @@ export function createApiRouter(): Router {
   }
 
   function requireAdminAuth(req: Request, res: Response, next: NextFunction) {
-    const { token, viaCookie } = extractAdminToken(req);
-    const session = verifyAdminSessionToken(token);
-    if (!session) {
+    const auth = authenticateAdminRequest(req);
+    if (!auth) {
       res.setHeader('Cache-Control', 'no-store');
       return res.status(401).json({
         code: 'admin_unauthorized',
@@ -967,7 +973,7 @@ export function createApiRouter(): Router {
     }
     const isMutation =
       req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS';
-    if (viaCookie && isMutation && !verifySameOriginOrHeader(req)) {
+    if (auth.viaCookie && isMutation && !verifySameOriginOrHeader(req)) {
       return res.status(403).json({
         code: 'csrf_check_failed',
         message: 'Invalid request origin.',
@@ -978,14 +984,13 @@ export function createApiRouter(): Router {
 
   router.get('/admin/auth/status', (req: Request, res: Response) => {
     const { mode, needsSetup } = getAdminAuthMode();
-    const { token } = extractAdminToken(req);
-    const session = verifyAdminSessionToken(token);
+    const auth = authenticateAdminRequest(req);
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
-      authenticated: Boolean(session),
+      authenticated: Boolean(auth),
       mode,
       needsSetup,
-      expiresAt: session ? new Date(session.exp).toISOString() : undefined,
+      expiresAt: auth ? new Date(auth.session.exp).toISOString() : undefined,
     });
   });
 
@@ -1556,12 +1561,30 @@ export function createApiRouter(): Router {
     const accessTokenConfigured = Boolean(
       (process.env.META_ACCESS_TOKEN || '').trim()
     );
+    const businessIdConfigured = Boolean(
+      (process.env.META_BUSINESS_ID || '').trim()
+    );
+    const commerceAccountIdConfigured = Boolean(
+      (process.env.META_COMMERCE_ACCOUNT_ID || '').trim()
+    );
+    const storefrontIdConfigured = Boolean(
+      (process.env.META_STOREFRONT_ID || '').trim()
+    );
     const pixelIdConfigured = Boolean((process.env.META_PIXEL_ID || '').trim());
+    const graphApiVersion =
+      /^v\d+\.\d+$/.test((process.env.META_GRAPH_API_VERSION || '').trim())
+        ? (process.env.META_GRAPH_API_VERSION || '').trim()
+        : 'v22.0';
+    const metaStorefrontBase = (
+      process.env.META_STOREFRONT_BASE_URL || 'https://www.fiftydollarshop.com'
+    )
+      .trim()
+      .replace(/\/+$/, '');
 
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
       checkedAt: new Date().toISOString(),
-      storefrontBaseUrl: 'https://www.fiftydollarshop.com/',
+      storefrontBaseUrl: `${metaStorefrontBase}/`,
       woocommerce: {
         connected,
         mode: hasV3Credentials ? 'v3+store-fallback' : 'store-public',
@@ -1577,9 +1600,13 @@ export function createApiRouter(): Router {
         woocommerceCheckoutProxyActive: true,
       },
       metaCommerce: {
-        storefrontBaseUrl: 'https://www.fiftydollarshop.com/',
+        storefrontBaseUrl: `${metaStorefrontBase}/`,
+        graphApiVersion,
         catalogIdConfigured,
         accessTokenConfigured,
+        businessIdConfigured,
+        commerceAccountIdConfigured,
+        storefrontIdConfigured,
         pixelIdConfigured,
         status:
           catalogIdConfigured && accessTokenConfigured
@@ -1601,7 +1628,7 @@ export function createApiRouter(): Router {
 // Standalone Express app exported for Vercel Serverless Functions (/api/index.ts)
 const vercelApp = express();
 vercelApp.disable('x-powered-by');
-vercelApp.use(express.json({ limit: '64kb' }));
+vercelApp.use(express.json({ limit: '2mb' }));
 vercelApp.use((_req: Request, res: Response, next: NextFunction) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');

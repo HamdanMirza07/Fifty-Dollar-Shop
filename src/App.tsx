@@ -53,11 +53,16 @@ import {
   loadWishlistFromStorage,
   saveWishlistToStorage,
 } from './utils/wishlistStorage';
+import {
+  parseMetaCheckoutQuery,
+  resolveMetaCheckoutItems,
+} from './utils/metaCheckoutParams';
 
 function parseRouteFromLocation(): {
   page: AppPage;
   categorySlug?: string;
   productId?: number;
+  productSlug?: string;
 } {
   const rawPath = window.location.pathname.replace(/\/+$/, '') || '/';
   const path = rawPath.toLowerCase();
@@ -83,9 +88,17 @@ function parseRouteFromLocation(): {
     return { page: 'category', categorySlug: decodeURIComponent(catMatch[1]) };
   }
 
-  const prodMatch = rawPath.match(/^\/product\/(\d+)$/i);
-  if (prodMatch) {
-    return { page: 'product', productId: Number(prodMatch[1]) };
+  const prodIdMatch = rawPath.match(/^\/product\/(\d+)$/i);
+  if (prodIdMatch) {
+    return { page: 'product', productId: Number(prodIdMatch[1]) };
+  }
+
+  const prodSlugMatch = rawPath.match(/^\/product\/([^/]+)$/i);
+  if (prodSlugMatch) {
+    return {
+      page: 'product',
+      productSlug: decodeURIComponent(prodSlugMatch[1]),
+    };
   }
 
   return { page: 'home' };
@@ -187,6 +200,12 @@ export default function App() {
   const [productPlacements, setProductPlacements] = useState<
     Record<number, ProductPlacement>
   >({});
+
+  const [hydratingMetaCheckout, setHydratingMetaCheckout] = useState(false);
+  const [metaCheckoutCoupon, setMetaCheckoutCoupon] = useState<string | null>(
+    null
+  );
+  const hydratedMetaSearchRef = useRef<string | null>(null);
 
   const catalogRef = useRef<HTMLDivElement | null>(null);
   const newArrivalRef = useRef<HTMLDivElement | null>(null);
@@ -375,8 +394,114 @@ export default function App() {
           setCurrentPage('shop');
           pushPath('/shop');
         });
+    } else if (initialRoute.page === 'product' && initialRoute.productSlug) {
+      const targetSlug = initialRoute.productSlug.trim().toLowerCase();
+      fetchWcProducts({ perPage: 100 })
+        .then((list) => {
+          const matched = list.find(
+            (p) => (p.slug || '').trim().toLowerCase() === targetSlug
+          );
+          if (matched) {
+            setSelectedProduct(matched);
+            return fetchWcProductById(matched.id)
+              .then((full) => setSelectedProduct(full))
+              .catch(() => {});
+          }
+          setCurrentPage('shop');
+          pushPath('/shop');
+        })
+        .catch(() => {
+          setCurrentPage('shop');
+          pushPath('/shop');
+        });
     }
-  }, [initialRoute.page, initialRoute.productId, pushPath]);
+  }, [
+    initialRoute.page,
+    initialRoute.productId,
+    initialRoute.productSlug,
+    pushPath,
+  ]);
+
+  // Meta / Instagram Shop Checkout URL Hydration: /checkout/?products=<retailerId>:<qty>&coupon=<code>
+  useEffect(() => {
+    if (currentPage !== 'checkout') return;
+    const currentSearch = window.location.search || '';
+    const parsed = parseMetaCheckoutQuery(currentSearch);
+    if (parsed.coupon) {
+      setMetaCheckoutCoupon(parsed.coupon);
+    }
+    if (parsed.items.length === 0) return;
+    if (hydratedMetaSearchRef.current === currentSearch) return;
+    hydratedMetaSearchRef.current = currentSearch;
+
+    let cancelled = false;
+    setHydratingMetaCheckout(true);
+
+    (async () => {
+      try {
+        const combinedCatalog = [
+          ...hotSellingProducts,
+          ...newArrivalProducts,
+          ...products,
+        ];
+        const additions = await resolveMetaCheckoutItems(
+          parsed.items,
+          combinedCatalog
+        );
+        let latestCart: WcCart | null = null;
+        for (const addition of additions) {
+          if (cancelled) return;
+          try {
+            latestCart = await addWcCartItem(
+              addition.cartItemId,
+              addition.quantity,
+              addition.variationAttributes
+            );
+          } catch {
+            // Fallback to parent product ID if variation add fails
+            if (addition.productId !== addition.cartItemId) {
+              try {
+                latestCart = await addWcCartItem(
+                  addition.productId,
+                  addition.quantity,
+                  addition.variationAttributes
+                );
+              } catch {
+                // Continue loading remaining items
+              }
+            }
+          }
+        }
+        if (!cancelled) {
+          if (latestCart) {
+            setCart(latestCart);
+          } else {
+            await loadCart();
+          }
+          if (additions.length > 0) {
+            showNotice(
+              `Loaded ${additions.length === 1 ? additions[0].matchedLabel : `${additions.length} items`} from Meta Shop into checkout.`
+            );
+          }
+        }
+      } finally {
+        if (!cancelled) {
+          setHydratingMetaCheckout(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentPage,
+    hotSellingProducts,
+    newArrivalProducts,
+    products,
+    loadCart,
+    showNotice,
+  ]);
 
   const loadStorefrontConfig = useCallback(async () => {
     try {
@@ -1082,6 +1207,8 @@ export default function App() {
               {currentPage === 'checkout' && (
                 <CheckoutView
                   cart={cart}
+                  hydratingMetaCheckout={hydratingMetaCheckout}
+                  metaCouponCode={metaCheckoutCoupon}
                   onBackToShop={() => handleNavigate('shop')}
                   onCartUpdated={(updated) => setCart(updated)}
                   onOrderCompleted={() => loadCart()}
@@ -1093,7 +1220,13 @@ export default function App() {
                 currentPage === 'shipping-policy' ||
                 currentPage === 'return-policy' ||
                 currentPage === 'privacy-policy') && (
-                <InfoPages page={currentPage} onNavigate={handleNavigate} />
+                <InfoPages
+                  page={currentPage}
+                  onNavigate={handleNavigate}
+                  supportEmail={storefrontSettings?.supportEmail}
+                  instagramUrl={storefrontSettings?.instagramUrl}
+                  facebookUrl={storefrontSettings?.facebookUrl}
+                />
               )}
             </motion.div>
           </AnimatePresence>

@@ -17,6 +17,9 @@ export type SupportInfoPage =
 interface InfoPagesProps {
   page: SupportInfoPage;
   onNavigate: (page: AppPage) => void;
+  supportEmail?: string;
+  instagramUrl?: string;
+  facebookUrl?: string;
 }
 
 const SUPPORT_TABS: Array<{ id: SupportInfoPage; label: string }> = [
@@ -27,7 +30,13 @@ const SUPPORT_TABS: Array<{ id: SupportInfoPage; label: string }> = [
   { id: 'privacy-policy', label: 'Privacy Policy' },
 ];
 
-export const InfoPages: React.FC<InfoPagesProps> = ({ page, onNavigate }) => {
+export const InfoPages: React.FC<InfoPagesProps> = ({
+  page,
+  onNavigate,
+  supportEmail,
+  instagramUrl,
+  facebookUrl,
+}) => {
   return (
     <section className="bg-[#F4F5F8] py-8 sm:py-14 min-h-[72vh]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -68,7 +77,14 @@ export const InfoPages: React.FC<InfoPagesProps> = ({ page, onNavigate }) => {
 
         {/* Dedicated Page Content */}
         {page === 'about' && <AboutPage onNavigate={onNavigate} />}
-        {page === 'contact' && <ContactPage onNavigate={onNavigate} />}
+        {page === 'contact' && (
+          <ContactPage
+            onNavigate={onNavigate}
+            supportEmail={supportEmail}
+            instagramUrl={instagramUrl}
+            facebookUrl={facebookUrl}
+          />
+        )}
         {page === 'shipping-policy' && (
           <ShippingPolicyPage onNavigate={onNavigate} />
         )}

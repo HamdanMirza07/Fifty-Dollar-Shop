@@ -95,8 +95,12 @@ export interface AdminDiagnostics {
   };
   metaCommerce: {
     storefrontBaseUrl: string;
+    graphApiVersion?: string;
     catalogIdConfigured: boolean;
     accessTokenConfigured: boolean;
+    businessIdConfigured?: boolean;
+    commerceAccountIdConfigured?: boolean;
+    storefrontIdConfigured?: boolean;
     pixelIdConfigured: boolean;
     status: 'ready_to_connect' | 'configured';
   };
@@ -107,4 +111,22 @@ export interface MetaSyncSummary {
   pending: number;
   errors: number;
   statusLabel: string;
+}
+
+export type MetaSyncState = 'synced' | 'removed' | 'error';
+
+export interface MetaProductSyncStatusRecord {
+  productId: string;
+  status: MetaSyncState;
+  updatedAt: string;
+  variantCount: number;
+  retailerId?: string;
+  itemGroupId?: string;
+  syncedRetailerIds?: string[];
+  categorySetName?: string;
+  productSetId?: string | null;
+  shopPublished?: boolean;
+  shopIds?: string[];
+  warnings?: string[];
+  errorMessage?: string;
 }

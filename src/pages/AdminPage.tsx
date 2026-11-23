@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import {
   bulkUpdateProductPlacements,
+  clearAdminBearerToken,
   fetchAdminAuthStatus,
   fetchAdminCatalog,
   fetchAdminOrders,
@@ -29,20 +30,31 @@ import { AdminCategoriesTab } from '../components/admin/AdminCategoriesTab';
 import { AdminLoginScreen } from '../components/admin/AdminLoginScreen';
 import { AdminOrdersTab } from '../components/admin/AdminOrdersTab';
 import { AdminOverviewTab } from '../components/admin/AdminOverviewTab';
-import { AdminProductsTab } from '../components/admin/AdminProductsTab';
+import {
+  AdminProductsTab,
+  type BulkMetaSyncProgress,
+} from '../components/admin/AdminProductsTab';
 import { AdminSettingsTab } from '../components/admin/AdminSettingsTab';
 import { OrderDetailModal } from '../components/admin/OrderDetailModal';
 import { VariationsInspectorDrawer } from '../components/admin/VariationsInspectorDrawer';
+import {
+  loadMetaSyncStatuses,
+  prefetchFreshWcProductsInBatches,
+  removeProductFromMeta,
+  syncProductToMeta,
+} from '../services/metaCatalogSync';
 import type {
   AdminAuthStatus,
   AdminOrder,
   AdminOrderStatus,
   AdminSection,
+  MetaProductSyncStatusRecord,
   ProductPlacement,
   StorefrontConfigResponse,
   StorefrontSettings,
 } from '../types/admin';
 import type { WcCategory, WcProduct } from '../types/woocommerce';
+import { decodeHtmlEntities } from '../utils/format';
 
 interface AdminPageProps {
   onExitToStorefront: () => void;
@@ -109,6 +121,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [updatingOrderStatus, setUpdatingOrderStatus] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
+  const [metaSyncStatuses, setMetaSyncStatuses] = useState<
+    Record<string, MetaProductSyncStatusRecord>
+  >(() => loadMetaSyncStatuses());
+  const [syncingMetaIds, setSyncingMetaIds] = useState<Set<number>>(new Set());
+  const [removingMetaIds, setRemovingMetaIds] = useState<Set<number>>(
+    new Set()
+  );
+  const [bulkMetaProgress, setBulkMetaProgress] =
+    useState<BulkMetaSyncProgress | null>(null);
+
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     window.setTimeout(() => {
@@ -141,8 +163,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   }, [checkAuth]);
 
   const handleUnauthorized = useCallback(() => {
+    clearAdminBearerToken();
     setAuthStatus((prev) =>
-      prev ? { ...prev, authenticated: false } : { authenticated: false, mode: 'env', needsSetup: false }
+      prev
+        ? { ...prev, authenticated: false }
+        : { authenticated: false, mode: 'env', needsSetup: false }
     );
   }, []);
 
@@ -279,6 +304,142 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     } finally {
       setBulkSaving(false);
     }
+  };
+
+  const handleSyncProductToMeta = async (product: WcProduct) => {
+    const productKey = String(product.id);
+    setSyncingMetaIds((prev) => new Set(prev).add(product.id));
+    try {
+      const existing = metaSyncStatuses[productKey];
+      const { response, statusRecord } = await syncProductToMeta(
+        product,
+        existing
+      );
+      setMetaSyncStatuses((prev) => ({ ...prev, [productKey]: statusRecord }));
+      showToast(
+        `Synced "${decodeHtmlEntities(product.name)}" (${response.variantCount} ${response.variantCount === 1 ? 'item' : 'variants'}) to Meta Catalog${response.shopPublished ? ' & Shop' : ''}.`
+      );
+    } catch (err) {
+      const status = (err as { status?: number })?.status;
+      if (status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      setMetaSyncStatuses(loadMetaSyncStatuses());
+      showToast(
+        err instanceof Error
+          ? err.message
+          : 'Unable to sync product to Meta Catalog.'
+      );
+    } finally {
+      setSyncingMetaIds((prev) => {
+        const next = new Set(prev);
+        next.delete(product.id);
+        return next;
+      });
+    }
+  };
+
+  const handleRemoveProductFromMeta = async (product: WcProduct) => {
+    const productKey = String(product.id);
+    setRemovingMetaIds((prev) => new Set(prev).add(product.id));
+    try {
+      const existing = metaSyncStatuses[productKey];
+      const { response, statusRecord } = await removeProductFromMeta(
+        product,
+        existing
+      );
+      setMetaSyncStatuses((prev) => ({ ...prev, [productKey]: statusRecord }));
+      showToast(
+        `Removed "${decodeHtmlEntities(product.name)}" (${response.removedCount} Meta ${response.removedCount === 1 ? 'item' : 'items'}) from Meta Catalog.`
+      );
+    } catch (err) {
+      const status = (err as { status?: number })?.status;
+      if (status === 401) {
+        handleUnauthorized();
+        return;
+      }
+      showToast(
+        err instanceof Error
+          ? err.message
+          : 'Unable to remove product from Meta Catalog.'
+      );
+    } finally {
+      setRemovingMetaIds((prev) => {
+        const next = new Set(prev);
+        next.delete(product.id);
+        return next;
+      });
+    }
+  };
+
+  const handleBulkSyncToMeta = async (productsToSync: WcProduct[]) => {
+    if (productsToSync.length === 0) return;
+
+    const progressState: BulkMetaSyncProgress = {
+      active: true,
+      total: productsToSync.length,
+      completed: 0,
+      succeeded: 0,
+      failed: 0,
+      currentProductName: 'Fetching fresh WooCommerce product details...',
+      errors: [],
+    };
+    setBulkMetaProgress({ ...progressState });
+
+    // Prefetch live WooCommerce product & variation data in parallel batches of 6
+    const freshMap = await prefetchFreshWcProductsInBatches(productsToSync, true);
+
+    for (const rawProduct of productsToSync) {
+      const target = freshMap.get(rawProduct.id) || rawProduct;
+      const productName = decodeHtmlEntities(target.name);
+      progressState.currentProductName = productName;
+      setBulkMetaProgress({ ...progressState });
+
+      setSyncingMetaIds((prev) => new Set(prev).add(target.id));
+      try {
+        const existing = loadMetaSyncStatuses()[String(target.id)];
+        const { statusRecord } = await syncProductToMeta(target, existing);
+        setMetaSyncStatuses((prev) => ({
+          ...prev,
+          [String(target.id)]: statusRecord,
+        }));
+        progressState.succeeded += 1;
+      } catch (err) {
+        const status = (err as { status?: number })?.status;
+        if (status === 401) {
+          handleUnauthorized();
+          progressState.active = false;
+          setBulkMetaProgress({ ...progressState });
+          return;
+        }
+        setMetaSyncStatuses(loadMetaSyncStatuses());
+        progressState.failed += 1;
+        progressState.errors = [
+          ...progressState.errors,
+          {
+            productName,
+            message:
+              err instanceof Error ? err.message : 'Meta sync failed.',
+          },
+        ];
+      } finally {
+        setSyncingMetaIds((prev) => {
+          const next = new Set(prev);
+          next.delete(target.id);
+          return next;
+        });
+        progressState.completed += 1;
+        setBulkMetaProgress({ ...progressState });
+      }
+    }
+
+    progressState.active = false;
+    progressState.currentProductName = '';
+    setBulkMetaProgress({ ...progressState });
+    showToast(
+      `Bulk Meta Sync finished: ${progressState.succeeded} succeeded, ${progressState.failed} failed.`
+    );
   };
 
   const handleUpdateOrderStatus = async (
@@ -588,6 +749,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               categories={categories}
               orders={orders}
               placements={placements}
+              metaSyncStatuses={metaSyncStatuses}
               syncedAt={syncedAt}
               loadingCatalog={loadingCatalog}
               onRefreshCatalog={() => void handleRefreshCatalog()}
@@ -603,6 +765,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               products={products}
               categories={categories}
               placements={placements}
+              metaSyncStatuses={metaSyncStatuses}
+              syncingMetaIds={syncingMetaIds}
+              removingMetaIds={removingMetaIds}
+              bulkMetaProgress={bulkMetaProgress}
               syncedAt={syncedAt}
               loading={loadingCatalog}
               error={catalogError}
@@ -617,6 +783,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               onBulkPlacement={(ids, patch) =>
                 void handleBulkPlacement(ids, patch)
               }
+              onSyncProductToMeta={(p) => void handleSyncProductToMeta(p)}
+              onRemoveProductFromMeta={(p) =>
+                void handleRemoveProductFromMeta(p)
+              }
+              onBulkSyncToMeta={(list) => void handleBulkSyncToMeta(list)}
+              onDismissBulkMetaProgress={() => setBulkMetaProgress(null)}
             />
           )}
 

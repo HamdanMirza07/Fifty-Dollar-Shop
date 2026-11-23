@@ -4,7 +4,10 @@ import {
   AlertCircle,
   CheckCircle2,
   CreditCard,
+  ExternalLink,
+  Facebook,
   Globe,
+  Instagram,
   Loader2,
   RefreshCw,
   Save,
@@ -34,9 +37,11 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
     settings?.announcementText || ''
   );
   const [instagramUrl, setInstagramUrl] = useState(
-    settings?.instagramUrl || ''
+    settings?.instagramUrl || 'https://www.instagram.com/fifty_dollar_shop/'
   );
-  const [facebookUrl, setFacebookUrl] = useState(settings?.facebookUrl || '');
+  const [facebookUrl, setFacebookUrl] = useState(
+    settings?.facebookUrl || 'https://www.facebook.com/fiftydollarshop'
+  );
   const [savingSettings, setSavingSettings] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -266,16 +271,18 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
             </div>
             <div>
               <h2 className="font-heading font-bold text-[16px] text-[#0B0F19]">
-                Meta Commerce Readiness
+                Meta Commerce &amp; Shop Sync
               </h2>
               <p className="text-[13px] text-[#5A6275]">
-                Prepared for Meta Catalog &amp; Meta Shop Sync in the next step
+                Server-side Graph API{' '}
+                {diagnostics?.metaCommerce.graphApiVersion || 'v22.0'} catalog
+                &amp; shop sync status
               </p>
             </div>
           </div>
 
-          <div className="space-y-3 text-[13.5px]">
-            <div className="flex items-center justify-between py-2.5 border-b border-[#E2E5EC] gap-3">
+          <div className="space-y-2.5 text-[13.5px]">
+            <div className="flex items-center justify-between py-2 border-b border-[#E2E5EC] gap-3">
               <span className="text-[#5A6275] shrink-0">
                 Storefront Base URL
               </span>
@@ -284,26 +291,91 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
                   'https://www.fiftydollarshop.com/'}
               </span>
             </div>
-            <div className="flex items-center justify-between py-2.5 border-b border-[#E2E5EC]">
-              <span className="text-[#5A6275]">Meta Catalog Env Status</span>
-              <span className="font-mono font-semibold text-[#D97706]">
+            <div className="flex items-center justify-between py-2 border-b border-[#E2E5EC]">
+              <span className="text-[#5A6275]">Meta Sync Status</span>
+              <span
+                className={`font-mono font-semibold ${
+                  diagnostics?.metaCommerce.status === 'configured'
+                    ? 'text-[#16A34A]'
+                    : 'text-[#D97706]'
+                }`}
+              >
                 {diagnostics?.metaCommerce.status === 'configured'
-                  ? 'Env Configured'
-                  : 'Ready to Connect'}
+                  ? 'Connected & Active'
+                  : 'Set Env Vars to Sync'}
               </span>
             </div>
-            <div className="flex items-center justify-between py-2.5 border-b border-[#E2E5EC]">
+            <div className="flex items-center justify-between py-2 border-b border-[#E2E5EC]">
               <span className="text-[#5A6275]">
-                Product Links &amp; Bulk Slots
+                Catalog ID &amp; Access Token
               </span>
-              <span className="font-mono font-semibold text-[#16A34A]">
-                Wired for Sync
+              <span className="font-mono text-[12px] font-semibold text-[#0B0F19]">
+                {diagnostics?.metaCommerce.catalogIdConfigured &&
+                diagnostics?.metaCommerce.accessTokenConfigured
+                  ? 'Configured on Server'
+                  : 'Missing Server Env'}
               </span>
+            </div>
+            <div className="flex items-center justify-between py-2 border-b border-[#E2E5EC]">
+              <span className="text-[#5A6275]">
+                Business / Commerce / Shop IDs
+              </span>
+              <span className="font-mono text-[12px] text-[#5A6275]">
+                {[
+                  diagnostics?.metaCommerce.businessIdConfigured
+                    ? 'Business ✓'
+                    : 'Business —',
+                  diagnostics?.metaCommerce.commerceAccountIdConfigured
+                    ? 'Commerce ✓'
+                    : 'Commerce —',
+                  diagnostics?.metaCommerce.storefrontIdConfigured
+                    ? 'Shop ✓'
+                    : 'Shop —',
+                ].join(' · ')}
+              </span>
+            </div>
+            <div className="flex items-center justify-between py-2 border-b border-[#E2E5EC] gap-3">
+              <span className="text-[#5A6275] inline-flex items-center gap-1.5 shrink-0">
+                <Instagram className="w-3.5 h-3.5 text-[#0B0F19]" aria-hidden="true" />
+                <span>Instagram Profile</span>
+              </span>
+              {instagramUrl ? (
+                <a
+                  href={instagramUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-[12px] font-semibold text-[#122B5C] hover:text-[#E54826] inline-flex items-center gap-1 truncate"
+                >
+                  <span className="truncate">@fifty_dollar_shop</span>
+                  <ExternalLink className="w-3 h-3 shrink-0" aria-hidden="true" />
+                </a>
+              ) : (
+                <span className="font-mono text-[12px] text-[#5A6275]">Not set</span>
+              )}
+            </div>
+            <div className="flex items-center justify-between py-2 border-b border-[#E2E5EC] gap-3">
+              <span className="text-[#5A6275] inline-flex items-center gap-1.5 shrink-0">
+                <Facebook className="w-3.5 h-3.5 text-[#0B0F19]" aria-hidden="true" />
+                <span>Facebook Page</span>
+              </span>
+              {facebookUrl ? (
+                <a
+                  href={facebookUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-mono text-[12px] font-semibold text-[#122B5C] hover:text-[#E54826] inline-flex items-center gap-1 truncate"
+                >
+                  <span className="truncate">/fiftydollarshop</span>
+                  <ExternalLink className="w-3 h-3 shrink-0" aria-hidden="true" />
+                </a>
+              ) : (
+                <span className="font-mono text-[12px] text-[#5A6275]">Not set</span>
+              )}
             </div>
             <p className="text-[12.5px] text-[#5A6275] pt-1">
-              Every WooCommerce product row and bulk toolbar is pre-structured
-              to connect one-click Sync to Meta, Re-Sync, and Remove from Meta
-              actions once Meta credentials are configured on the server.
+              Sync individual products, re-sync edits in-place, or run Bulk Sync
+              All from the WooCommerce Products tab. Meta access tokens stay
+              strictly on the server.
             </p>
           </div>
         </div>
@@ -376,35 +448,63 @@ export const AdminSettingsTab: React.FC<AdminSettingsTabProps> = ({
             </div>
 
             <div>
-              <label
-                htmlFor="settings-instagram"
-                className="block text-[13px] font-semibold text-[#0B0F19] mb-1.5"
-              >
-                Instagram URL
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label
+                  htmlFor="settings-instagram"
+                  className="text-[13px] font-semibold text-[#0B0F19] inline-flex items-center gap-1.5"
+                >
+                  <Instagram className="w-3.5 h-3.5 text-[#5A6275]" aria-hidden="true" />
+                  <span>Instagram Profile URL</span>
+                </label>
+                {instagramUrl && (
+                  <a
+                    href={instagramUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[12px] font-semibold text-[#122B5C] hover:text-[#E54826] inline-flex items-center gap-1"
+                  >
+                    <span>Open</span>
+                    <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                  </a>
+                )}
+              </div>
               <input
                 id="settings-instagram"
                 type="url"
                 value={instagramUrl}
                 onChange={(e) => setInstagramUrl(e.target.value)}
-                placeholder="https://www.instagram.com/..."
+                placeholder="https://www.instagram.com/fifty_dollar_shop/"
                 className="w-full h-10 px-3.5 rounded-xl border border-[#E2E5EC] bg-[#F4F5F8] focus:bg-white text-[13.5px] text-[#0B0F19] focus:outline-2 focus:outline-[#0B0F19]"
               />
             </div>
 
             <div>
-              <label
-                htmlFor="settings-facebook"
-                className="block text-[13px] font-semibold text-[#0B0F19] mb-1.5"
-              >
-                Facebook URL
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label
+                  htmlFor="settings-facebook"
+                  className="text-[13px] font-semibold text-[#0B0F19] inline-flex items-center gap-1.5"
+                >
+                  <Facebook className="w-3.5 h-3.5 text-[#5A6275]" aria-hidden="true" />
+                  <span>Facebook Page URL</span>
+                </label>
+                {facebookUrl && (
+                  <a
+                    href={facebookUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[12px] font-semibold text-[#122B5C] hover:text-[#E54826] inline-flex items-center gap-1"
+                  >
+                    <span>Open</span>
+                    <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                  </a>
+                )}
+              </div>
               <input
                 id="settings-facebook"
                 type="url"
                 value={facebookUrl}
                 onChange={(e) => setFacebookUrl(e.target.value)}
-                placeholder="https://www.facebook.com/..."
+                placeholder="https://www.facebook.com/fiftydollarshop"
                 className="w-full h-10 px-3.5 rounded-xl border border-[#E2E5EC] bg-[#F4F5F8] focus:bg-white text-[13.5px] text-[#0B0F19] focus:outline-2 focus:outline-[#0B0F19]"
               />
             </div>
