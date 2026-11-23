@@ -36,7 +36,8 @@ export interface BulkMetaSyncProgress {
   succeeded: number;
   failed: number;
   currentProductName: string;
-  errors: Array<{ productName: string; message: string }>;
+  statusNote?: string;
+  errors: Array<{ productId?: number; productName: string; message: string }>;
 }
 
 interface AdminProductsTabProps {
@@ -66,6 +67,7 @@ interface AdminProductsTabProps {
   onSyncProductToMeta: (product: WcProduct) => void;
   onRemoveProductFromMeta: (product: WcProduct) => void;
   onBulkSyncToMeta: (productsToSync: WcProduct[]) => void;
+  onCancelBulkMetaSync: () => void;
   onDismissBulkMetaProgress: () => void;
 }
 
@@ -114,6 +116,7 @@ export const AdminProductsTab: React.FC<AdminProductsTabProps> = ({
   onSyncProductToMeta,
   onRemoveProductFromMeta,
   onBulkSyncToMeta,
+  onCancelBulkMetaSync,
   onDismissBulkMetaProgress,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -259,6 +262,13 @@ export const AdminProductsTab: React.FC<AdminProductsTabProps> = ({
     () => products.filter((p) => selectedIds.has(p.id)),
     [products, selectedIds]
   );
+  const failedMetaProducts = useMemo(
+    () =>
+      products.filter(
+        (p) => metaSyncStatuses[String(p.id)]?.status === 'error'
+      ),
+    [products, metaSyncStatuses]
+  );
 
   const hasActiveFilters =
     Boolean(searchQuery.trim()) ||
@@ -320,6 +330,17 @@ export const AdminProductsTab: React.FC<AdminProductsTabProps> = ({
               : `Select All Filtered (${filteredProducts.length})`}
           </button>
 
+          {failedMetaProducts.length > 0 && !isBulkMetaActive && (
+            <button
+              type="button"
+              onClick={() => onBulkSyncToMeta(failedMetaProducts)}
+              className="h-10 px-3.5 rounded-xl bg-[#D97706] hover:bg-[#B45309] text-white text-[13px] font-heading font-semibold inline-flex items-center gap-2 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <RefreshCw className="w-4 h-4" aria-hidden="true" />
+              <span>Retry Failed ({failedMetaProducts.length})</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => onBulkSyncToMeta(filteredProducts)}
@@ -357,39 +378,68 @@ export const AdminProductsTab: React.FC<AdminProductsTabProps> = ({
       {bulkMetaProgress && (
         <div className="rounded-2xl bg-white border border-[#E2E5EC] p-4 sm:p-5 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-start gap-2.5 min-w-0">
               {bulkMetaProgress.active ? (
                 <Loader2
-                  className="w-4 h-4 animate-spin text-[#122B5C] shrink-0"
+                  className="w-4 h-4 animate-spin text-[#122B5C] shrink-0 mt-0.5"
                   aria-hidden="true"
                 />
               ) : bulkMetaProgress.failed > 0 ? (
                 <AlertCircle
-                  className="w-4 h-4 text-[#D97706] shrink-0"
+                  className="w-4 h-4 text-[#D97706] shrink-0 mt-0.5"
                   aria-hidden="true"
                 />
               ) : (
                 <CheckCircle2
-                  className="w-4 h-4 text-[#16A34A] shrink-0"
+                  className="w-4 h-4 text-[#16A34A] shrink-0 mt-0.5"
                   aria-hidden="true"
                 />
               )}
-              <p className="text-[13.5px] font-semibold text-[#0B0F19]">
-                {bulkMetaProgress.active
-                  ? `Bulk Syncing to Meta Catalog (${bulkMetaProgress.completed} of ${bulkMetaProgress.total}): ${bulkMetaProgress.currentProductName}`
-                  : `Bulk Meta Sync Complete — ${bulkMetaProgress.succeeded} succeeded, ${bulkMetaProgress.failed} failed`}
-              </p>
+              <div className="min-w-0">
+                <p className="text-[13.5px] font-semibold text-[#0B0F19]">
+                  {bulkMetaProgress.active
+                    ? `Bulk Syncing to Meta Catalog (${bulkMetaProgress.completed} of ${bulkMetaProgress.total}): ${bulkMetaProgress.currentProductName}`
+                    : `Bulk Meta Sync Complete — ${bulkMetaProgress.succeeded} succeeded, ${bulkMetaProgress.failed} failed`}
+                </p>
+                {bulkMetaProgress.statusNote && (
+                  <p className="text-[12px] font-mono text-[#122B5C] mt-0.5">
+                    {bulkMetaProgress.statusNote}
+                  </p>
+                )}
+              </div>
             </div>
 
-            {!bulkMetaProgress.active && (
-              <button
-                type="button"
-                onClick={onDismissBulkMetaProgress}
-                className="text-[12.5px] font-semibold text-[#5A6275] hover:text-[#0B0F19] cursor-pointer"
-              >
-                Dismiss
-              </button>
-            )}
+            <div className="flex items-center gap-2 shrink-0">
+              {bulkMetaProgress.active ? (
+                <button
+                  type="button"
+                  onClick={onCancelBulkMetaSync}
+                  className="h-8 px-3 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 text-[12px] font-semibold cursor-pointer"
+                >
+                  Stop Sync
+                </button>
+              ) : (
+                <>
+                  {bulkMetaProgress.failed > 0 && failedMetaProducts.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => onBulkSyncToMeta(failedMetaProducts)}
+                      className="h-8 px-3 rounded-lg bg-[#D97706] hover:bg-[#B45309] text-white text-[12px] font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Retry Failed ({failedMetaProducts.length})</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={onDismissBulkMetaProgress}
+                    className="text-[12.5px] font-semibold text-[#5A6275] hover:text-[#0B0F19] cursor-pointer px-1"
+                  >
+                    Dismiss
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
           <div className="w-full h-2 rounded-full bg-[#ECEEF2] overflow-hidden">

@@ -93,6 +93,20 @@ export interface MetaSyncResult {
   syncedAt: string;
 }
 
+export interface MetaBulkSyncProductError {
+  productId: string;
+  productName: string;
+  message: string;
+}
+
+export interface MetaBulkSyncResult {
+  ok: boolean;
+  results: MetaSyncResult[];
+  errors: MetaBulkSyncProductError[];
+  batchCallsMade: number;
+  syncedAt: string;
+}
+
 export interface MetaRemoveResult {
   ok: boolean;
   productId: string;
@@ -563,22 +577,61 @@ function chunkArray<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
+const META_RATE_LIMIT_CODES = new Set([4, 17, 32, 613, 80000, 80001, 80004]);
+
+function isMetaRateLimitFailure(
+  status: number,
+  code: number | undefined,
+  message: string
+): boolean {
+  if (status === 429) return true;
+  if (code !== undefined && META_RATE_LIMIT_CODES.has(code)) return true;
+  return /too many calls|rate limit|wait a bit|request limit|temporarily blocked|throttl/i.test(
+    message
+  );
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseRetryAfterSeconds(headerValue: string | null): number {
+  if (!headerValue) return 25;
+  const trimmed = headerValue.trim();
+  const numeric = Number.parseInt(trimmed, 10);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return Math.min(Math.max(numeric, 10), 120);
+  }
+  const dateMs = Date.parse(trimmed);
+  if (Number.isFinite(dateMs)) {
+    const deltaSec = Math.ceil((dateMs - Date.now()) / 1000);
+    if (deltaSec > 0) return Math.min(Math.max(deltaSec, 10), 120);
+  }
+  return 25;
+}
+
 class MetaGraphApiError extends Error {
   status: number;
   metaCode?: number;
   metaSubcode?: number;
+  isRateLimit: boolean;
+  retryAfterSeconds?: number;
 
   constructor(
     message: string,
     status = 502,
     metaCode?: number,
-    metaSubcode?: number
+    metaSubcode?: number,
+    isRateLimit = false,
+    retryAfterSeconds?: number
   ) {
     super(message);
     this.name = 'MetaGraphApiError';
     this.status = status;
     this.metaCode = metaCode;
     this.metaSubcode = metaSubcode;
+    this.isRateLimit = isRateLimit;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -589,6 +642,7 @@ async function metaGraphRequest<T>(
     method?: 'GET' | 'POST' | 'DELETE';
     query?: Record<string, string>;
     body?: Record<string, unknown>;
+    maxRateLimitRetries?: number;
   } = {}
 ): Promise<T> {
   const cleanPath = endpointPath.startsWith('/')
@@ -615,52 +669,78 @@ async function metaGraphRequest<T>(
     bodyStr = JSON.stringify(options.body);
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25_000);
-  try {
-    const response = await fetch(url.toString(), {
-      method,
-      headers,
-      body: bodyStr,
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    let parsed: Record<string, unknown> = {};
+  const maxRetries = options.maxRateLimitRetries ?? 1;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25_000);
     try {
-      parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-    } catch {
-      parsed = { raw: text.slice(0, 300) };
-    }
+      const response = await fetch(url.toString(), {
+        method,
+        headers,
+        body: bodyStr,
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let parsed: Record<string, unknown> = {};
+      try {
+        parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+      } catch {
+        parsed = { raw: text.slice(0, 300) };
+      }
 
-    if (!response.ok || parsed.error) {
-      const errObj =
-        parsed.error && typeof parsed.error === 'object'
-          ? (parsed.error as Record<string, unknown>)
-          : null;
-      const errMsg =
-        (errObj &&
-          typeof errObj.error_user_msg === 'string' &&
-          errObj.error_user_msg) ||
-        (errObj && typeof errObj.message === 'string' && errObj.message) ||
-        `Meta Graph API request failed (HTTP ${response.status})`;
-      const code =
-        errObj && typeof errObj.code === 'number' ? errObj.code : undefined;
-      const subcode =
-        errObj && typeof errObj.error_subcode === 'number'
-          ? errObj.error_subcode
+      if (!response.ok || parsed.error) {
+        const errObj =
+          parsed.error && typeof parsed.error === 'object'
+            ? (parsed.error as Record<string, unknown>)
+            : null;
+        const errMsg =
+          (errObj &&
+            typeof errObj.error_user_msg === 'string' &&
+            errObj.error_user_msg) ||
+          (errObj && typeof errObj.message === 'string' && errObj.message) ||
+          `Meta Graph API request failed (HTTP ${response.status})`;
+        const code =
+          errObj && typeof errObj.code === 'number' ? errObj.code : undefined;
+        const subcode =
+          errObj && typeof errObj.error_subcode === 'number'
+            ? errObj.error_subcode
+            : undefined;
+        const rateLimited = isMetaRateLimitFailure(
+          response.status,
+          code,
+          errMsg
+        );
+        const retryAfterSeconds = rateLimited
+          ? parseRetryAfterSeconds(response.headers.get('retry-after'))
           : undefined;
-      throw new MetaGraphApiError(
-        errMsg,
-        response.status >= 400 && response.status < 600 ? response.status : 502,
-        code,
-        subcode
-      );
-    }
 
-    return parsed as T;
-  } finally {
-    clearTimeout(timeout);
+        if (rateLimited && attempt < maxRetries) {
+          await sleepMs(2_500 * (attempt + 1));
+          continue;
+        }
+
+        throw new MetaGraphApiError(
+          errMsg,
+          rateLimited
+            ? 429
+            : response.status >= 400 && response.status < 600
+              ? response.status
+              : 502,
+          code,
+          subcode,
+          rateLimited,
+          retryAfterSeconds
+        );
+      }
+
+      return parsed as T;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
+
+  throw new MetaGraphApiError('Meta Graph API request failed.', 502);
 }
 
 async function fetchExistingCatalogItems(
@@ -1156,17 +1236,22 @@ async function configureCommerceCheckoutUrlBestEffort(
   }
 }
 
-export async function syncProductToMetaCatalog(
-  input: MetaSyncProductInput
-): Promise<MetaSyncResult> {
-  const cfg = getMetaEnvConfig();
-  if (!cfg.accessToken || !cfg.catalogId) {
-    throw new MetaGraphApiError(
-      'Meta Commerce is not configured on the server yet. Set META_ACCESS_TOKEN and META_CATALOG_ID in your server environment variables.',
-      503
-    );
-  }
+interface PreparedProductBatchPlan {
+  productIdStr: string;
+  productName: string;
+  itemGroupId: string;
+  categoryName: string;
+  coverImageUrl: string;
+  syncedRetailerIds: string[];
+  deletedStaleIds: string[];
+  requests: Array<Record<string, unknown>>;
+}
 
+function prepareProductBatchPlan(
+  cfg: MetaEnvConfig,
+  input: MetaSyncProductInput,
+  existingItems: ExistingMetaCatalogItem[]
+): PreparedProductBatchPlan {
   if (!input || (!input.id && !input.wcProductId) || !input.name) {
     throw new MetaGraphApiError(
       'Invalid product payload: product ID and title are required.',
@@ -1207,18 +1292,6 @@ export async function syncProductToMetaCatalog(
     );
   }
 
-  const warnings: string[] = [];
-
-  // 1. Discover existing items in Meta catalog for in-place re-sync & stale variant cleanup
-  let existingItems: ExistingMetaCatalogItem[] = [];
-  try {
-    existingItems = await fetchExistingCatalogItems(cfg);
-  } catch (err) {
-    warnings.push(
-      `Catalog lookup before upsert fell back to fresh upsert: ${err instanceof Error ? err.message : 'unknown error'}`
-    );
-  }
-
   const matchedExisting = findMatchingCatalogItems(
     existingItems,
     input,
@@ -1240,7 +1313,6 @@ export async function syncProductToMetaCatalog(
 
   const itemGroupId = existingGroupId || defaultGroupId;
 
-  // 2. Prepare variant items (multi-variant or simple)
   const rawVariants: MetaVariantInput[] =
     Array.isArray(input.variants) && input.variants.length > 0
       ? input.variants.slice(0, 150)
@@ -1273,7 +1345,7 @@ export async function syncProductToMetaCatalog(
         (Array.isArray(v.attributes) && v.attributes.length > 0)
     );
 
-  const batchRequests: Array<Record<string, unknown>> = [];
+  const requests: Array<Record<string, unknown>> = [];
   const syncedRetailerIds: string[] = [];
   const seenRetailerIds = new Set<string>();
 
@@ -1392,31 +1464,68 @@ export async function syncProductToMetaCatalog(
       data.additional_variant_attribute = additionalAttrs.join(', ').slice(0, 500);
     }
 
-    batchRequests.push({
+    requests.push({
       method: 'UPDATE',
       retailer_id: retailerId,
       data,
     });
   }
 
-  // 3. Queue DELETE requests in the same batch for stale/removed variants or legacy flat single-item IDs
   const deletedStaleIds: string[] = [];
   for (const existing of matchedExisting) {
     const existingRid = (existing.retailer_id || '').trim();
     if (existingRid && !seenRetailerIds.has(existingRid)) {
       deletedStaleIds.push(existingRid);
-      batchRequests.push({
+      requests.push({
         method: 'DELETE',
         retailer_id: existingRid,
       });
     }
   }
 
-  // 4. Submit chunked items_batch upserts (max 200 per batch)
-  const batchErrors: string[] = [];
-  const chunks = chunkArray(batchRequests, MAX_BATCH_SIZE);
+  return {
+    productIdStr,
+    productName: baseTitle,
+    itemGroupId,
+    categoryName,
+    coverImageUrl: primaryProductImages.primary,
+    syncedRetailerIds,
+    deletedStaleIds,
+    requests,
+  };
+}
 
-  for (const chunk of chunks) {
+export async function syncProductToMetaCatalog(
+  input: MetaSyncProductInput
+): Promise<MetaSyncResult> {
+  const cfg = getMetaEnvConfig();
+  if (!cfg.accessToken || !cfg.catalogId) {
+    throw new MetaGraphApiError(
+      'Meta Commerce is not configured on the server yet. Set META_ACCESS_TOKEN and META_CATALOG_ID in your server environment variables.',
+      503
+    );
+  }
+
+  const warnings: string[] = [];
+
+  // 1. Discover existing items in Meta catalog for in-place re-sync & stale variant cleanup
+  let existingItems: ExistingMetaCatalogItem[] = [];
+  try {
+    existingItems = await fetchExistingCatalogItems(cfg);
+  } catch (err) {
+    warnings.push(
+      `Catalog lookup before upsert fell back to fresh upsert: ${err instanceof Error ? err.message : 'unknown error'}`
+    );
+  }
+
+  const plan = prepareProductBatchPlan(cfg, input, existingItems);
+
+  // 2. Submit chunked items_batch upserts (max 200 per batch)
+  const batchErrors: string[] = [];
+  const chunks = chunkArray(plan.requests, MAX_BATCH_SIZE);
+
+  for (let i = 0; i < chunks.length; i += 1) {
+    if (i > 0) await sleepMs(2_000);
     const res = await metaGraphRequest<{
       handles?: string[];
       validation_status?: MetaValidationStatusEntry[];
@@ -1425,7 +1534,7 @@ export async function syncProductToMetaCatalog(
       body: {
         allow_upsert: true,
         item_type: 'PRODUCT_ITEM',
-        requests: chunk,
+        requests: chunks[i],
       },
     });
 
@@ -1441,27 +1550,27 @@ export async function syncProductToMetaCatalog(
     );
   }
 
-  // 5. Category Product Set & Meta Shop Collection Publishing
+  // 3. Category Product Set & Meta Shop Collection Publishing
   const setResult = await ensureCategoryProductSetAndPublish(cfg, {
-    categoryName,
-    syncedRetailerIds,
-    coverImageUrl: primaryProductImages.primary,
+    categoryName: plan.categoryName,
+    syncedRetailerIds: plan.syncedRetailerIds,
+    coverImageUrl: plan.coverImageUrl,
     warnings,
   });
 
-  // 6. Best-effort website checkout URL configuration on Commerce Account (non-fatal)
+  // 4. Best-effort website checkout URL configuration on Commerce Account (non-fatal)
   const checkoutUrlConfigured =
     await configureCommerceCheckoutUrlBestEffort(cfg);
 
   return {
     ok: true,
-    productId: productIdStr,
-    itemGroupId,
-    primaryRetailerId: syncedRetailerIds[0] || itemGroupId,
-    syncedRetailerIds,
-    deletedStaleIds,
-    variantCount: syncedRetailerIds.length,
-    categoryName,
+    productId: plan.productIdStr,
+    itemGroupId: plan.itemGroupId,
+    primaryRetailerId: plan.syncedRetailerIds[0] || plan.itemGroupId,
+    syncedRetailerIds: plan.syncedRetailerIds,
+    deletedStaleIds: plan.deletedStaleIds,
+    variantCount: plan.syncedRetailerIds.length,
+    categoryName: plan.categoryName,
     productSetId: setResult.productSetId,
     shopPublished: setResult.shopPublished,
     shopIds: setResult.shopIds,
@@ -1469,6 +1578,217 @@ export async function syncProductToMetaCatalog(
     cleanedEmptySets: setResult.cleanedEmptySets,
     warnings,
     syncedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Syncs multiple products in ONE combined Meta items_batch call (chunked only if >200 variant requests)
+ * and updates Category Product Sets & Meta Shop Collections ONCE per category — cutting Meta
+ * Catalog API call volume by >90% during bulk syncs to avoid Meta's batch upload rate limits.
+ */
+export async function syncProductsBatchToMetaCatalog(
+  inputs: MetaSyncProductInput[],
+  options: { skipCollections?: boolean } = {}
+): Promise<MetaBulkSyncResult> {
+  const cfg = getMetaEnvConfig();
+  if (!cfg.accessToken || !cfg.catalogId) {
+    throw new MetaGraphApiError(
+      'Meta Commerce is not configured on the server yet. Set META_ACCESS_TOKEN and META_CATALOG_ID in your server environment variables.',
+      503
+    );
+  }
+
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    throw new MetaGraphApiError(
+      'At least one product is required for bulk Meta sync.',
+      400
+    );
+  }
+
+  const sharedWarnings: string[] = [];
+  let existingItems: ExistingMetaCatalogItem[] = [];
+  try {
+    existingItems = await fetchExistingCatalogItems(cfg);
+  } catch (err) {
+    sharedWarnings.push(
+      `Catalog lookup before bulk upsert fell back to fresh upsert: ${err instanceof Error ? err.message : 'unknown error'}`
+    );
+  }
+
+  const plans: PreparedProductBatchPlan[] = [];
+  const productErrors: MetaBulkSyncProductError[] = [];
+
+  for (const input of inputs) {
+    try {
+      plans.push(prepareProductBatchPlan(cfg, input, existingItems));
+    } catch (err) {
+      productErrors.push({
+        productId: String(input?.wcProductId ?? input?.id ?? 'unknown'),
+        productName: stripHtml(input?.name || 'Product', 160) || 'Product',
+        message:
+          err instanceof Error ? err.message : 'Invalid product payload.',
+      });
+    }
+  }
+
+  const retailerToPlan = new Map<string, PreparedProductBatchPlan>();
+  const combinedRequests: Array<Record<string, unknown>> = [];
+  for (const plan of plans) {
+    for (const rid of plan.syncedRetailerIds) {
+      retailerToPlan.set(rid, plan);
+    }
+    for (const delId of plan.deletedStaleIds) {
+      if (!retailerToPlan.has(delId)) {
+        retailerToPlan.set(delId, plan);
+      }
+    }
+    combinedRequests.push(...plan.requests);
+  }
+
+  const errorsByProductId = new Map<string, string[]>();
+  const warningsByProductId = new Map<string, string[]>();
+  const chunks = chunkArray(combinedRequests, MAX_BATCH_SIZE);
+  let batchCallsMade = 0;
+
+  for (let i = 0; i < chunks.length; i += 1) {
+    if (i > 0) await sleepMs(2_000);
+    const res = await metaGraphRequest<{
+      handles?: string[];
+      validation_status?: MetaValidationStatusEntry[];
+    }>(cfg, `/${cfg.catalogId}/items_batch`, {
+      method: 'POST',
+      body: {
+        allow_upsert: true,
+        item_type: 'PRODUCT_ITEM',
+        requests: chunks[i],
+      },
+    });
+    batchCallsMade += 1;
+
+    if (Array.isArray(res.validation_status)) {
+      for (const entry of res.validation_status) {
+        const rid = (entry.retailer_id || '').trim();
+        const ownerPlan = rid ? retailerToPlan.get(rid) : undefined;
+        const targetPid = ownerPlan?.productIdStr || '';
+        const pfx = rid ? `[${rid}] ` : '';
+
+        if (Array.isArray(entry.errors)) {
+          for (const e of entry.errors) {
+            if (!e?.message) continue;
+            if (targetPid) {
+              const list = errorsByProductId.get(targetPid) || [];
+              list.push(`${pfx}${e.message}`);
+              errorsByProductId.set(targetPid, list);
+            } else {
+              sharedWarnings.push(`${pfx}${e.message}`);
+            }
+          }
+        }
+        if (Array.isArray(entry.warnings)) {
+          for (const w of entry.warnings) {
+            if (!w?.message) continue;
+            if (targetPid) {
+              const list = warningsByProductId.get(targetPid) || [];
+              list.push(`${pfx}${w.message}`);
+              warningsByProductId.set(targetPid, list);
+            } else {
+              sharedWarnings.push(`${pfx}${w.message}`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const successfulPlans: PreparedProductBatchPlan[] = [];
+  for (const plan of plans) {
+    const pErrs = errorsByProductId.get(plan.productIdStr) || [];
+    if (pErrs.length > 0) {
+      productErrors.push({
+        productId: plan.productIdStr,
+        productName: plan.productName,
+        message: `Meta Catalog validation rejected one or more variants: ${pErrs.slice(0, 3).join(' | ')}`,
+      });
+    } else {
+      successfulPlans.push(plan);
+    }
+  }
+
+  // Publish Category Product Sets & Meta Shop Collections ONCE per unique category in this chunk
+  const categorySetInfo = new Map<
+    string,
+    {
+      productSetId: string | null;
+      shopPublished: boolean;
+      shopIds: string[];
+      cleanedEmptySets: number;
+    }
+  >();
+
+  let checkoutUrlConfigured = false;
+
+  if (!options.skipCollections && successfulPlans.length > 0) {
+    const byCategory = new Map<
+      string,
+      { retailerIds: string[]; coverImageUrl: string }
+    >();
+    for (const plan of successfulPlans) {
+      const existing = byCategory.get(plan.categoryName);
+      if (existing) {
+        existing.retailerIds.push(...plan.syncedRetailerIds);
+      } else {
+        byCategory.set(plan.categoryName, {
+          retailerIds: [...plan.syncedRetailerIds],
+          coverImageUrl: plan.coverImageUrl,
+        });
+      }
+    }
+
+    for (const [catName, info] of byCategory.entries()) {
+      const setRes = await ensureCategoryProductSetAndPublish(cfg, {
+        categoryName: catName,
+        syncedRetailerIds: Array.from(new Set(info.retailerIds)),
+        coverImageUrl: info.coverImageUrl,
+        warnings: sharedWarnings,
+      });
+      categorySetInfo.set(catName, setRes);
+    }
+
+    checkoutUrlConfigured = await configureCommerceCheckoutUrlBestEffort(cfg);
+  }
+
+  const syncedAt = new Date().toISOString();
+  const results: MetaSyncResult[] = successfulPlans.map((plan) => {
+    const setRes = categorySetInfo.get(plan.categoryName);
+    const pWarnings = [
+      ...sharedWarnings,
+      ...(warningsByProductId.get(plan.productIdStr) || []),
+    ];
+    return {
+      ok: true,
+      productId: plan.productIdStr,
+      itemGroupId: plan.itemGroupId,
+      primaryRetailerId: plan.syncedRetailerIds[0] || plan.itemGroupId,
+      syncedRetailerIds: plan.syncedRetailerIds,
+      deletedStaleIds: plan.deletedStaleIds,
+      variantCount: plan.syncedRetailerIds.length,
+      categoryName: plan.categoryName,
+      productSetId: setRes?.productSetId ?? null,
+      shopPublished: setRes?.shopPublished ?? false,
+      shopIds: setRes?.shopIds ?? [],
+      checkoutUrlConfigured,
+      cleanedEmptySets: setRes?.cleanedEmptySets ?? 0,
+      warnings: pWarnings,
+      syncedAt,
+    };
+  });
+
+  return {
+    ok: true,
+    results,
+    errors: productErrors,
+    batchCallsMade,
+    syncedAt,
   };
 }
 
@@ -1599,19 +1919,33 @@ export async function handleMetaSyncProductRequest(
   }
 
   try {
+    if (Array.isArray(req.body?.products)) {
+      const bulkResult = await syncProductsBatchToMetaCatalog(
+        req.body.products as MetaSyncProductInput[],
+        { skipCollections: Boolean(req.body?.skipCollections) }
+      );
+      return res.status(200).json(bulkResult);
+    }
+
     const payload = (req.body?.product || req.body) as MetaSyncProductInput;
     const result = await syncProductToMetaCatalog(payload);
     return res.status(200).json(result);
   } catch (err) {
-    const status =
-      err instanceof MetaGraphApiError && err.status ? err.status : 500;
+    const isMetaErr = err instanceof MetaGraphApiError;
+    const isRateLimit = isMetaErr && err.isRateLimit;
+    const status = isMetaErr && err.status ? err.status : 500;
     const message =
       err instanceof Error
         ? err.message
         : 'Unable to sync product to Meta Catalog.';
+    if (isRateLimit && err.retryAfterSeconds) {
+      res.setHeader('Retry-After', String(err.retryAfterSeconds));
+    }
     return res.status(status).json({
       ok: false,
-      code: 'meta_sync_failed',
+      code: isRateLimit ? 'meta_rate_limited' : 'meta_sync_failed',
+      rateLimited: isRateLimit,
+      retryAfterSeconds: isRateLimit ? err.retryAfterSeconds || 25 : undefined,
       message,
     });
   }

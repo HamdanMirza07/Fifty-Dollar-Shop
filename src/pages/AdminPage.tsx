@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   ChevronLeft,
@@ -39,9 +39,9 @@ import { OrderDetailModal } from '../components/admin/OrderDetailModal';
 import { VariationsInspectorDrawer } from '../components/admin/VariationsInspectorDrawer';
 import {
   loadMetaSyncStatuses,
-  prefetchFreshWcProductsInBatches,
   removeProductFromMeta,
   syncProductToMeta,
+  syncProductsBulkToMeta,
 } from '../services/metaCatalogSync';
 import type {
   AdminAuthStatus,
@@ -130,6 +130,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   );
   const [bulkMetaProgress, setBulkMetaProgress] =
     useState<BulkMetaSyncProgress | null>(null);
+  const bulkMetaAbortRef = useRef<AbortController | null>(null);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -373,72 +374,76 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     }
   };
 
+  const handleCancelBulkMetaSync = () => {
+    bulkMetaAbortRef.current?.abort();
+  };
+
   const handleBulkSyncToMeta = async (productsToSync: WcProduct[]) => {
     if (productsToSync.length === 0) return;
 
-    const progressState: BulkMetaSyncProgress = {
+    bulkMetaAbortRef.current?.abort();
+    const controller = new AbortController();
+    bulkMetaAbortRef.current = controller;
+
+    setBulkMetaProgress({
       active: true,
       total: productsToSync.length,
       completed: 0,
       succeeded: 0,
       failed: 0,
-      currentProductName: 'Fetching fresh WooCommerce product details...',
+      currentProductName: `Preparing ${productsToSync.length} products for batched Meta sync...`,
+      statusNote: 'Bundling products into shared Meta batches to stay within Catalog rate limits.',
       errors: [],
-    };
-    setBulkMetaProgress({ ...progressState });
+    });
 
-    // Prefetch live WooCommerce product & variation data in parallel batches of 6
-    const freshMap = await prefetchFreshWcProductsInBatches(productsToSync, true);
-
-    for (const rawProduct of productsToSync) {
-      const target = freshMap.get(rawProduct.id) || rawProduct;
-      const productName = decodeHtmlEntities(target.name);
-      progressState.currentProductName = productName;
-      setBulkMetaProgress({ ...progressState });
-
-      setSyncingMetaIds((prev) => new Set(prev).add(target.id));
-      try {
-        const existing = loadMetaSyncStatuses()[String(target.id)];
-        const { statusRecord } = await syncProductToMeta(target, existing);
-        setMetaSyncStatuses((prev) => ({
-          ...prev,
-          [String(target.id)]: statusRecord,
-        }));
-        progressState.succeeded += 1;
-      } catch (err) {
-        const status = (err as { status?: number })?.status;
-        if (status === 401) {
-          handleUnauthorized();
-          progressState.active = false;
-          setBulkMetaProgress({ ...progressState });
-          return;
-        }
-        setMetaSyncStatuses(loadMetaSyncStatuses());
-        progressState.failed += 1;
-        progressState.errors = [
-          ...progressState.errors,
-          {
-            productName,
-            message:
-              err instanceof Error ? err.message : 'Meta sync failed.',
-          },
-        ];
-      } finally {
-        setSyncingMetaIds((prev) => {
-          const next = new Set(prev);
-          next.delete(target.id);
-          return next;
+    const summary = await syncProductsBulkToMeta(productsToSync, {
+      signal: controller.signal,
+      onPhaseChange: (info) => {
+        setSyncingMetaIds(new Set(info.activeProductIds));
+        setBulkMetaProgress({
+          active: true,
+          total: productsToSync.length,
+          completed: info.completed,
+          succeeded: info.succeeded,
+          failed: info.failed,
+          currentProductName: info.currentProductName,
+          statusNote: info.statusNote,
+          errors: info.errors,
         });
-        progressState.completed += 1;
-        setBulkMetaProgress({ ...progressState });
-      }
+      },
+      onStatusesUpdated: (nextStatuses) => {
+        setMetaSyncStatuses(nextStatuses);
+      },
+    });
+
+    setSyncingMetaIds(new Set());
+    if (bulkMetaAbortRef.current === controller) {
+      bulkMetaAbortRef.current = null;
     }
 
-    progressState.active = false;
-    progressState.currentProductName = '';
-    setBulkMetaProgress({ ...progressState });
+    if (summary.unauthorized) {
+      handleUnauthorized();
+      setBulkMetaProgress(null);
+      return;
+    }
+
+    setBulkMetaProgress({
+      active: false,
+      total: productsToSync.length,
+      completed: summary.succeeded + summary.failed,
+      succeeded: summary.succeeded,
+      failed: summary.failed,
+      currentProductName: '',
+      statusNote: summary.cancelled
+        ? 'Bulk sync cancelled by admin. Completed batches remain synced.'
+        : undefined,
+      errors: summary.errors,
+    });
+
     showToast(
-      `Bulk Meta Sync finished: ${progressState.succeeded} succeeded, ${progressState.failed} failed.`
+      summary.cancelled
+        ? `Bulk Meta Sync stopped: ${summary.succeeded} succeeded before cancel.`
+        : `Bulk Meta Sync finished: ${summary.succeeded} succeeded, ${summary.failed} failed.`
     );
   };
 
@@ -788,6 +793,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 void handleRemoveProductFromMeta(p)
               }
               onBulkSyncToMeta={(list) => void handleBulkSyncToMeta(list)}
+              onCancelBulkMetaSync={handleCancelBulkMetaSync}
               onDismissBulkMetaProgress={() => setBulkMetaProgress(null)}
             />
           )}

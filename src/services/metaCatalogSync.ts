@@ -69,6 +69,18 @@ export interface MetaSyncApiResponse {
   syncedAt: string;
 }
 
+export interface MetaBulkSyncApiResponse {
+  ok: boolean;
+  results: MetaSyncApiResponse[];
+  errors: Array<{
+    productId: string;
+    productName: string;
+    message: string;
+  }>;
+  batchCallsMade: number;
+  syncedAt: string;
+}
+
 export interface MetaRemoveApiResponse {
   ok: boolean;
   productId: string;
@@ -77,6 +89,13 @@ export interface MetaRemoveApiResponse {
   removedCount: number;
   warnings: string[];
   removedAt: string;
+}
+
+export interface MetaApiClientError extends Error {
+  status?: number;
+  code?: string;
+  rateLimited?: boolean;
+  retryAfterSeconds?: number;
 }
 
 // In-memory cache of fresh WooCommerce product details (with variation_details)
@@ -507,9 +526,34 @@ export function buildMetaVariantPayloads(
       ];
 }
 
+function isMetaRateLimitMessage(msg: string): boolean {
+  return /too many calls|rate limit|wait a bit|request limit|temporarily blocked|throttl/i.test(
+    msg
+  );
+}
+
+function sleepInterruptible(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('Sync cancelled by user.'));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new Error('Sync cancelled by user.'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 async function metaApiFetch<T>(
   path: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  signal?: AbortSignal
 ): Promise<T> {
   const headers = new Headers({
     Accept: 'application/json',
@@ -527,6 +571,7 @@ async function metaApiFetch<T>(
     credentials: 'include',
     cache: 'no-store',
     body: JSON.stringify(body),
+    signal,
   });
 
   const text = await response.text();
@@ -541,12 +586,87 @@ async function metaApiFetch<T>(
     const msg =
       (typeof parsed.message === 'string' && parsed.message) ||
       `Meta request failed (HTTP ${response.status})`;
-    const error = new Error(msg) as Error & { status?: number };
+    const error = new Error(msg) as MetaApiClientError;
     error.status = response.status;
+    error.code = typeof parsed.code === 'string' ? parsed.code : undefined;
+    error.rateLimited =
+      response.status === 429 ||
+      parsed.rateLimited === true ||
+      parsed.code === 'meta_rate_limited' ||
+      isMetaRateLimitMessage(msg);
+    const retryAfterBody =
+      typeof parsed.retryAfterSeconds === 'number' &&
+      Number.isFinite(parsed.retryAfterSeconds)
+        ? parsed.retryAfterSeconds
+        : undefined;
+    const retryHeader = response.headers.get('retry-after');
+    const retryHeaderNum = retryHeader ? Number.parseInt(retryHeader, 10) : NaN;
+    error.retryAfterSeconds =
+      retryAfterBody ||
+      (Number.isFinite(retryHeaderNum) && retryHeaderNum > 0
+        ? retryHeaderNum
+        : undefined);
     throw error;
   }
 
   return parsed as T;
+}
+
+export function buildClientSyncProductPayload(
+  freshProduct: WcProduct,
+  existingStatus?: MetaProductSyncStatusRecord
+): MetaClientSyncProductInput {
+  const variants = buildMetaVariantPayloads(
+    freshProduct,
+    existingStatus?.itemGroupId
+  );
+
+  return {
+    id: freshProduct.id,
+    wcProductId: freshProduct.id,
+    isWooCommerce: true,
+    name: decodeHtmlEntities(freshProduct.name),
+    slug: freshProduct.slug,
+    sku: freshProduct.sku || undefined,
+    description: freshProduct.description,
+    shortDescription: freshProduct.short_description,
+    price: freshProduct.regular_price || freshProduct.price || '50',
+    salePrice: freshProduct.sale_price || null,
+    currency: 'USD',
+    inStock: freshProduct.stock_status !== 'outofstock',
+    stockQuantity: freshProduct.stock_quantity ?? null,
+    brand: 'Fifty Dollar Shop',
+    categories: (freshProduct.categories || []).map((c) => ({
+      id: c.id,
+      name: decodeHtmlEntities(c.name),
+      slug: c.slug,
+    })),
+    imageUrl: freshProduct.images?.[0]?.src,
+    images: (freshProduct.images || []).map((img) => img.src).filter(Boolean),
+    metaRetailerId: existingStatus?.retailerId,
+    metaItemGroupId: existingStatus?.itemGroupId,
+    variants,
+  };
+}
+
+function responseToStatusRecord(
+  productKey: string,
+  response: MetaSyncApiResponse
+): MetaProductSyncStatusRecord {
+  return {
+    productId: productKey,
+    status: 'synced',
+    updatedAt: response.syncedAt || new Date().toISOString(),
+    variantCount: response.variantCount,
+    retailerId: response.primaryRetailerId,
+    itemGroupId: response.itemGroupId,
+    syncedRetailerIds: response.syncedRetailerIds,
+    categorySetName: response.categoryName,
+    productSetId: response.productSetId,
+    shopPublished: response.shopPublished,
+    shopIds: response.shopIds,
+    warnings: response.warnings,
+  };
 }
 
 /**
@@ -563,58 +683,14 @@ export async function syncProductToMeta(
   const productKey = String(product.id);
   try {
     const freshProduct = await fetchFreshWcProductForMetaSync(product, true);
-    const variants = buildMetaVariantPayloads(
-      freshProduct,
-      existingStatus?.itemGroupId
-    );
-
-    const payload: MetaClientSyncProductInput = {
-      id: freshProduct.id,
-      wcProductId: freshProduct.id,
-      isWooCommerce: true,
-      name: decodeHtmlEntities(freshProduct.name),
-      slug: freshProduct.slug,
-      sku: freshProduct.sku || undefined,
-      description: freshProduct.description,
-      shortDescription: freshProduct.short_description,
-      price: freshProduct.regular_price || freshProduct.price || '50',
-      salePrice: freshProduct.sale_price || null,
-      currency: 'USD',
-      inStock: freshProduct.stock_status !== 'outofstock',
-      stockQuantity: freshProduct.stock_quantity ?? null,
-      brand: 'Fifty Dollar Shop',
-      categories: (freshProduct.categories || []).map((c) => ({
-        id: c.id,
-        name: decodeHtmlEntities(c.name),
-        slug: c.slug,
-      })),
-      imageUrl: freshProduct.images?.[0]?.src,
-      images: (freshProduct.images || []).map((img) => img.src).filter(Boolean),
-      metaRetailerId: existingStatus?.retailerId,
-      metaItemGroupId: existingStatus?.itemGroupId,
-      variants,
-    };
+    const payload = buildClientSyncProductPayload(freshProduct, existingStatus);
 
     const response = await metaApiFetch<MetaSyncApiResponse>(
       '/api/meta/sync-product',
       { product: payload }
     );
 
-    const statusRecord: MetaProductSyncStatusRecord = {
-      productId: productKey,
-      status: 'synced',
-      updatedAt: response.syncedAt || new Date().toISOString(),
-      variantCount: response.variantCount,
-      retailerId: response.primaryRetailerId,
-      itemGroupId: response.itemGroupId,
-      syncedRetailerIds: response.syncedRetailerIds,
-      categorySetName: response.categoryName,
-      productSetId: response.productSetId,
-      shopPublished: response.shopPublished,
-      shopIds: response.shopIds,
-      warnings: response.warnings,
-    };
-
+    const statusRecord = responseToStatusRecord(productKey, response);
     upsertMetaSyncStatus(statusRecord);
     return { response, statusRecord };
   } catch (err) {
@@ -635,6 +711,312 @@ export async function syncProductToMeta(
     upsertMetaSyncStatus(errorRecord);
     throw err;
   }
+}
+
+export interface BulkMetaSyncCallbacks {
+  signal?: AbortSignal;
+  onPhaseChange?: (info: {
+    completed: number;
+    succeeded: number;
+    failed: number;
+    currentProductName: string;
+    statusNote?: string;
+    activeProductIds: number[];
+    errors: Array<{ productId: number; productName: string; message: string }>;
+  }) => void;
+  onStatusesUpdated?: (
+    statuses: Record<string, MetaProductSyncStatusRecord>
+  ) => void;
+}
+
+const BULK_CHUNK_MAX_PRODUCTS = 12;
+const BULK_CHUNK_MAX_VARIANTS = 120;
+const INTER_CHUNK_COOLDOWN_MS = 4_000;
+const MAX_RATE_LIMIT_CHUNK_RETRIES = 3;
+
+function buildOptimalBulkChunks(
+  entries: Array<{ product: WcProduct; payload: MetaClientSyncProductInput }>
+): Array<Array<{ product: WcProduct; payload: MetaClientSyncProductInput }>> {
+  const chunks: Array<
+    Array<{ product: WcProduct; payload: MetaClientSyncProductInput }>
+  > = [];
+  let current: Array<{ product: WcProduct; payload: MetaClientSyncProductInput }> =
+    [];
+  let currentVariants = 0;
+
+  for (const entry of entries) {
+    const vCount = Math.max(1, entry.payload.variants?.length || 1);
+    const wouldOverflow =
+      current.length >= BULK_CHUNK_MAX_PRODUCTS ||
+      (current.length > 0 && currentVariants + vCount > BULK_CHUNK_MAX_VARIANTS);
+
+    if (wouldOverflow) {
+      chunks.push(current);
+      current = [];
+      currentVariants = 0;
+    }
+
+    current.push(entry);
+    currentVariants += vCount;
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  return chunks;
+}
+
+/**
+ * Bulk-syncs multiple WooCommerce products into Meta Catalog using true multi-product
+ * batching (packing up to 12 products / 120 variants into ONE items_batch call),
+ * polite inter-batch pacing, and automatic rate-limit cooldown + countdown retries.
+ */
+export async function syncProductsBulkToMeta(
+  productsToSync: WcProduct[],
+  callbacks: BulkMetaSyncCallbacks = {}
+): Promise<{
+  succeeded: number;
+  failed: number;
+  cancelled: boolean;
+  unauthorized: boolean;
+  errors: Array<{ productId: number; productName: string; message: string }>;
+}> {
+  const { signal, onPhaseChange, onStatusesUpdated } = callbacks;
+  let completed = 0;
+  let succeeded = 0;
+  let failed = 0;
+  let cancelled = false;
+  let unauthorized = false;
+  const errors: Array<{ productId: number; productName: string; message: string }> =
+    [];
+
+  onPhaseChange?.({
+    completed: 0,
+    succeeded: 0,
+    failed: 0,
+    currentProductName: `Fetching fresh live WooCommerce data for ${productsToSync.length} products...`,
+    statusNote: 'Prefetching variations in batches of 6 before packing into Meta batches.',
+    activeProductIds: [],
+    errors: [],
+  });
+
+  const freshMap = await prefetchFreshWcProductsInBatches(productsToSync, true);
+  if (signal?.aborted) {
+    return { succeeded, failed, cancelled: true, unauthorized: false, errors };
+  }
+
+  const storedStatuses = loadMetaSyncStatuses();
+  const preparedEntries = productsToSync.map((raw) => {
+    const fresh = freshMap.get(raw.id) || raw;
+    const existing = storedStatuses[String(fresh.id)];
+    const payload = buildClientSyncProductPayload(fresh, existing);
+    return { product: fresh, payload };
+  });
+
+  const chunks = buildOptimalBulkChunks(preparedEntries);
+
+  for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx += 1) {
+    if (signal?.aborted) {
+      cancelled = true;
+      break;
+    }
+
+    const chunk = chunks[chunkIdx];
+    const chunkIds = chunk.map((c) => c.product.id);
+    const chunkLabel =
+      chunk.length === 1
+        ? decodeHtmlEntities(chunk[0].product.name)
+        : `Batch ${chunkIdx + 1}/${chunks.length} (${chunk.length} products bundled)`;
+
+    // Polite cooldown between consecutive Meta batch requests
+    if (chunkIdx > 0) {
+      const pauseSec = Math.ceil(INTER_CHUNK_COOLDOWN_MS / 1000);
+      for (let sec = pauseSec; sec > 0; sec -= 1) {
+        onPhaseChange?.({
+          completed,
+          succeeded,
+          failed,
+          currentProductName: chunkLabel,
+          statusNote: `Pacing Meta API calls — starting batch ${chunkIdx + 1}/${chunks.length} in ${sec}s...`,
+          activeProductIds: [],
+          errors: [...errors],
+        });
+        try {
+          await sleepInterruptible(1_000, signal);
+        } catch {
+          cancelled = true;
+          break;
+        }
+      }
+      if (cancelled) break;
+    }
+
+    let chunkSuccess: MetaBulkSyncApiResponse | null = null;
+    let lastChunkErr: MetaApiClientError | null = null;
+
+    for (let retry = 0; retry <= MAX_RATE_LIMIT_CHUNK_RETRIES; retry += 1) {
+      if (signal?.aborted) {
+        cancelled = true;
+        break;
+      }
+
+      onPhaseChange?.({
+        completed,
+        succeeded,
+        failed,
+        currentProductName: chunkLabel,
+        statusNote:
+          retry > 0
+            ? `Retrying batch ${chunkIdx + 1}/${chunks.length} (attempt ${retry + 1}/${MAX_RATE_LIMIT_CHUNK_RETRIES + 1})...`
+            : `Uploading ${chunk.reduce((sum, c) => sum + (c.payload.variants?.length || 1), 0)} items in 1 Meta batch call...`,
+        activeProductIds: chunkIds,
+        errors: [...errors],
+      });
+
+      try {
+        chunkSuccess = await metaApiFetch<MetaBulkSyncApiResponse>(
+          '/api/meta/sync-product',
+          {
+            products: chunk.map((c) => c.payload),
+          },
+          signal
+        );
+        lastChunkErr = null;
+        break;
+      } catch (err) {
+        if (signal?.aborted) {
+          cancelled = true;
+          break;
+        }
+
+        const apiErr = err as MetaApiClientError;
+        if (apiErr.status === 401) {
+          unauthorized = true;
+          return { succeeded, failed, cancelled: false, unauthorized: true, errors };
+        }
+
+        lastChunkErr = apiErr;
+        const isRateLimited =
+          apiErr.rateLimited === true ||
+          apiErr.status === 429 ||
+          isMetaRateLimitMessage(apiErr.message || '');
+
+        if (isRateLimited && retry < MAX_RATE_LIMIT_CHUNK_RETRIES) {
+          const baseWait = apiErr.retryAfterSeconds || 25;
+          const waitSec = Math.min(baseWait + retry * 20, 90);
+          for (let sec = waitSec; sec > 0; sec -= 1) {
+            onPhaseChange?.({
+              completed,
+              succeeded,
+              failed,
+              currentProductName: chunkLabel,
+              statusNote: `Meta Catalog rate limit active — waiting ${sec}s before auto-retry (${retry + 1}/${MAX_RATE_LIMIT_CHUNK_RETRIES})...`,
+              activeProductIds: [],
+              errors: [...errors],
+            });
+            try {
+              await sleepInterruptible(1_000, signal);
+            } catch {
+              cancelled = true;
+              break;
+            }
+          }
+          if (cancelled) break;
+          continue;
+        }
+
+        break;
+      }
+    }
+
+    if (cancelled) break;
+
+    const nextStatuses = { ...loadMetaSyncStatuses() };
+
+    if (chunkSuccess) {
+      const successById = new Map<string, MetaSyncApiResponse>();
+      for (const resItem of chunkSuccess.results || []) {
+        successById.set(String(resItem.productId), resItem);
+      }
+      const errorById = new Map<string, string>();
+      for (const errItem of chunkSuccess.errors || []) {
+        errorById.set(String(errItem.productId), errItem.message);
+      }
+
+      for (const entry of chunk) {
+        const key = String(entry.product.id);
+        const resItem = successById.get(key);
+        const existing = nextStatuses[key];
+        if (resItem) {
+          nextStatuses[key] = responseToStatusRecord(key, resItem);
+          succeeded += 1;
+        } else {
+          const msg =
+            errorById.get(key) ||
+            'Product did not complete Meta Catalog validation.';
+          nextStatuses[key] = {
+            productId: key,
+            status: 'error',
+            updatedAt: new Date().toISOString(),
+            variantCount: existing?.variantCount || 0,
+            retailerId: existing?.retailerId,
+            itemGroupId: existing?.itemGroupId,
+            syncedRetailerIds: existing?.syncedRetailerIds,
+            categorySetName: existing?.categorySetName,
+            shopPublished: false,
+            errorMessage: msg,
+          };
+          failed += 1;
+          errors.push({
+            productId: entry.product.id,
+            productName: decodeHtmlEntities(entry.product.name),
+            message: msg,
+          });
+        }
+        completed += 1;
+      }
+    } else if (lastChunkErr) {
+      const msg = lastChunkErr.message || 'Meta batch sync failed.';
+      for (const entry of chunk) {
+        const key = String(entry.product.id);
+        const existing = nextStatuses[key];
+        nextStatuses[key] = {
+          productId: key,
+          status: 'error',
+          updatedAt: new Date().toISOString(),
+          variantCount: existing?.variantCount || 0,
+          retailerId: existing?.retailerId,
+          itemGroupId: existing?.itemGroupId,
+          syncedRetailerIds: existing?.syncedRetailerIds,
+          categorySetName: existing?.categorySetName,
+          shopPublished: false,
+          errorMessage: msg,
+        };
+        failed += 1;
+        completed += 1;
+        errors.push({
+          productId: entry.product.id,
+          productName: decodeHtmlEntities(entry.product.name),
+          message: msg,
+        });
+      }
+    }
+
+    saveMetaSyncStatuses(nextStatuses);
+    onStatusesUpdated?.(nextStatuses);
+    onPhaseChange?.({
+      completed,
+      succeeded,
+      failed,
+      currentProductName: chunkLabel,
+      statusNote: undefined,
+      activeProductIds: [],
+      errors: [...errors],
+    });
+  }
+
+  return { succeeded, failed, cancelled, unauthorized, errors };
 }
 
 /**

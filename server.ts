@@ -18,7 +18,7 @@ const PORT = Number(process.env.PORT || 3000);
 async function startServer() {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '4mb' }));
 
   // Security headers (iframe-compatible)
   app.use((_req: Request, res: Response, next: NextFunction) => {
