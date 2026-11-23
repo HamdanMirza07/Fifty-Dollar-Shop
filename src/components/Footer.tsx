@@ -14,9 +14,17 @@ import type { AppPage } from '../types/woocommerce';
 
 interface FooterProps {
   onNavigate: (page: AppPage) => void;
+  supportEmail?: string;
+  instagramUrl?: string;
+  facebookUrl?: string;
 }
 
-export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
+export const Footer: React.FC<FooterProps> = ({
+  onNavigate,
+  supportEmail = 'support@fiftydollarshop.com',
+  instagramUrl = 'https://www.instagram.com/',
+  facebookUrl = 'https://www.facebook.com/',
+}) => {
   const [alertEmail, setAlertEmail] = useState('');
   const [subscribed, setSubscribed] = useState(false);
 
@@ -238,50 +246,63 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
               Connect
             </h3>
             <a
-              href="mailto:support@fiftydollarshop.com"
+              href={`mailto:${supportEmail}`}
               className="inline-flex items-center gap-2 text-[13.5px] text-[#5A6275] hover:text-[#E54826] transition-colors mb-4"
             >
               <Mail className="w-4 h-4 shrink-0" aria-hidden="true" />
-              <span>support@fiftydollarshop.com</span>
+              <span>{supportEmail}</span>
             </a>
             <div className="flex flex-wrap items-center gap-2.5">
-              <a
-                href="https://www.instagram.com/"
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="FiftyDollarShop on Instagram"
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#F4F5F8] border border-[#E2E5EC] hover:bg-[#0B0F19] hover:text-white hover:border-[#0B0F19] text-[#0B0F19] text-[13px] font-medium transition-colors"
-              >
-                <Instagram className="w-4 h-4" aria-hidden="true" />
-                <span>Instagram</span>
-              </a>
-              <a
-                href="https://www.facebook.com/"
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="FiftyDollarShop on Facebook"
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#F4F5F8] border border-[#E2E5EC] hover:bg-[#0B0F19] hover:text-white hover:border-[#0B0F19] text-[#0B0F19] text-[13px] font-medium transition-colors"
-              >
-                <Facebook className="w-4 h-4" aria-hidden="true" />
-                <span>Facebook</span>
-              </a>
+              {instagramUrl && (
+                <a
+                  href={instagramUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="FiftyDollarShop on Instagram"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#F4F5F8] border border-[#E2E5EC] hover:bg-[#0B0F19] hover:text-white hover:border-[#0B0F19] text-[#0B0F19] text-[13px] font-medium transition-colors"
+                >
+                  <Instagram className="w-4 h-4" aria-hidden="true" />
+                  <span>Instagram</span>
+                </a>
+              )}
+              {facebookUrl && (
+                <a
+                  href={facebookUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="FiftyDollarShop on Facebook"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#F4F5F8] border border-[#E2E5EC] hover:bg-[#0B0F19] hover:text-white hover:border-[#0B0F19] text-[#0B0F19] text-[13px] font-medium transition-colors"
+                >
+                  <Facebook className="w-4 h-4" aria-hidden="true" />
+                  <span>Facebook</span>
+                </a>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Bottom Quiet Copyright + Back to Top */}
+        {/* Bottom Quiet Copyright + Discreet Admin Link + Back to Top */}
         <div className="border-t border-[#E2E5EC] pt-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-[13px] text-[#5A6275]">
           <p>
             &copy; {new Date().getFullYear()} FiftyDollarShop.com · Free USA Shipping · Secure USA Checkout
           </p>
-          <button
-            type="button"
-            onClick={scrollToTop}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#F4F5F8] border border-[#E2E5EC] hover:bg-[#0B0F19] hover:text-white hover:border-[#0B0F19] text-[#0B0F19] text-[12.5px] font-heading font-semibold cursor-pointer transition-colors"
-          >
-            <span>Back to top</span>
-            <ArrowUp className="w-3.5 h-3.5" aria-hidden="true" />
-          </button>
+          <div className="flex items-center gap-4">
+            <a
+              href="/admin"
+              onClick={(e) => handleLink(e, 'admin')}
+              className="text-[12.5px] text-[#5A6275]/80 hover:text-[#0B0F19] transition-colors"
+            >
+              Admin
+            </a>
+            <button
+              type="button"
+              onClick={scrollToTop}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#F4F5F8] border border-[#E2E5EC] hover:bg-[#0B0F19] hover:text-white hover:border-[#0B0F19] text-[#0B0F19] text-[12.5px] font-heading font-semibold cursor-pointer transition-colors"
+            >
+              <span>Back to top</span>
+              <ArrowUp className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </div>
     </footer>

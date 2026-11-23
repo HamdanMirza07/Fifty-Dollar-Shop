@@ -31,13 +31,24 @@ import { TrustBar } from './components/TrustBar';
 import { WhyFiftySection } from './components/WhyFiftySection';
 import { WishlistDrawer } from './components/WishlistDrawer';
 import { WishlistView } from './components/WishlistView';
+import { fetchStorefrontConfig } from './api/admin';
+import { AdminPage } from './pages/AdminPage';
+import type {
+  ProductPlacement,
+  StorefrontConfigResponse,
+  StorefrontSettings,
+} from './types/admin';
 import type {
   AppPage,
   WcCart,
   WcCategory,
   WcProduct,
 } from './types/woocommerce';
-import { decodeHtmlEntities, findMatchingVariationDetail } from './utils/format';
+import {
+  decodeHtmlEntities,
+  findMatchingVariationDetail,
+  isAllowedStoreCategory,
+} from './utils/format';
 import {
   loadWishlistFromStorage,
   saveWishlistToStorage,
@@ -48,7 +59,13 @@ function parseRouteFromLocation(): {
   categorySlug?: string;
   productId?: number;
 } {
-  const path = window.location.pathname.replace(/\/+$/, '') || '/';
+  const rawPath = window.location.pathname.replace(/\/+$/, '') || '/';
+  const path = rawPath.toLowerCase();
+  const hash = (window.location.hash || '').toLowerCase();
+
+  if (path === '/admin' || path.startsWith('/admin/') || hash === '#admin') {
+    return { page: 'admin' };
+  }
   if (path === '/') return { page: 'home' };
   if (path === '/shop') return { page: 'shop' };
   if (path === '/categories') return { page: 'categories' };
@@ -61,12 +78,12 @@ function parseRouteFromLocation(): {
   if (path === '/return-policy') return { page: 'return-policy' };
   if (path === '/privacy-policy') return { page: 'privacy-policy' };
 
-  const catMatch = path.match(/^\/category\/([^/]+)$/);
+  const catMatch = rawPath.match(/^\/category\/([^/]+)$/i);
   if (catMatch) {
     return { page: 'category', categorySlug: decodeURIComponent(catMatch[1]) };
   }
 
-  const prodMatch = path.match(/^\/product\/(\d+)$/);
+  const prodMatch = rawPath.match(/^\/product\/(\d+)$/i);
   if (prodMatch) {
     return { page: 'product', productId: Number(prodMatch[1]) };
   }
@@ -88,6 +105,7 @@ const PAGE_DEPTH: Record<AppPage, number> = {
   'shipping-policy': 1,
   'return-policy': 1,
   'privacy-policy': 1,
+  admin: 6,
 };
 
 const pageTransitionVariants = {
@@ -131,9 +149,8 @@ export default function App() {
     initialRoute.categorySlug
   );
 
-  // Live catalogs for primary categories + active category page view
+  // Live catalogs for primary categories (Hot Selling 50$ Products & New Arrival) + active category view
   const [hotSellingProducts, setHotSellingProducts] = useState<WcProduct[]>([]);
-  const [goinfoevProducts, setGoinfoevProducts] = useState<WcProduct[]>([]);
   const [newArrivalProducts, setNewArrivalProducts] = useState<WcProduct[]>([]);
   const [products, setProducts] = useState<WcProduct[]>([]);
 
@@ -142,7 +159,6 @@ export default function App() {
   const [quickViewProduct, setQuickViewProduct] = useState<WcProduct | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [goinfoevSearchQuery, setGoinfoevSearchQuery] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
 
   const [compareProducts, setCompareProducts] = useState<WcProduct[]>([]);
@@ -166,8 +182,14 @@ export default function App() {
   const [updatingCartKey, setUpdatingCartKey] = useState<string | null>(null);
   const [cartNotice, setCartNotice] = useState<string | null>(null);
 
+  const [storefrontSettings, setStorefrontSettings] =
+    useState<StorefrontSettings | null>(null);
+  const [productPlacements, setProductPlacements] = useState<
+    Record<number, ProductPlacement>
+  >({});
+
   const catalogRef = useRef<HTMLDivElement | null>(null);
-  const goinfoevRef = useRef<HTMLDivElement | null>(null);
+  const newArrivalRef = useRef<HTMLDivElement | null>(null);
 
   const pushPath = useCallback((nextPath: string) => {
     if (window.location.pathname !== nextPath) {
@@ -206,13 +228,6 @@ export default function App() {
     [categories]
   );
 
-  const goinfoevCategory = useMemo(
-    () =>
-      categories.find((c) => c.slug === 'goinfoev') ||
-      categories.find((c) => c.name.toLowerCase().includes('goinfoev')),
-    [categories]
-  );
-
   const newArrivalCategory = useMemo(
     () =>
       categories.find(
@@ -230,8 +245,9 @@ export default function App() {
       setCatalogError(null);
       try {
         const rawCats = await fetchWcCategories();
-        const activeCats = rawCats.filter((c) => c.count > 0);
-        const cats = activeCats.length > 0 ? activeCats : rawCats;
+        const allowedCats = rawCats.filter((c) => isAllowedStoreCategory(c));
+        const activeCats = allowedCats.filter((c) => c.count > 0);
+        const cats = activeCats.length > 0 ? activeCats : allowedCats;
         setCategories(cats);
 
         const foundHot =
@@ -239,10 +255,6 @@ export default function App() {
           cats.find((c) => c.slug === HOT_SELLING_CATEGORY_SLUG) ||
           cats.find((c) => c.name.toLowerCase().includes('hot selling')) ||
           cats[0];
-
-        const foundGo =
-          cats.find((c) => c.slug === 'goinfoev') ||
-          cats.find((c) => c.name.toLowerCase().includes('goinfoev'));
 
         const foundNewArrival =
           cats.find(
@@ -278,51 +290,40 @@ export default function App() {
           ? fetchWcProducts({ category: foundHot.id, perPage: 100 })
           : Promise.resolve([] as WcProduct[]);
 
-        const goPromise = foundGo
-          ? fetchWcProducts({ category: foundGo.id, perPage: 100 })
-          : Promise.resolve([] as WcProduct[]);
-
         const newArrivalPromise = foundNewArrival
           ? fetchWcProducts({ category: foundNewArrival.id, perPage: 100 })
           : Promise.resolve([] as WcProduct[]);
 
-        const activePromise =
-          targetCat === foundHot?.id
-            ? hotPromise
-            : targetCat === foundGo?.id
-              ? goPromise
-              : targetCat === foundNewArrival?.id
-                ? newArrivalPromise
-                : fetchWcProducts({
-                    category: targetCat === 'all' ? 'all' : targetCat,
-                    perPage: 100,
-                  });
-
-        const [hotList, goList, newArrivalList, activeList] = await Promise.all([
+        const [hotList, newArrivalList] = await Promise.all([
           hotPromise,
-          goPromise,
           newArrivalPromise,
-          activePromise,
         ]);
 
+        let activeList: WcProduct[];
+        if (targetCat === foundHot?.id) {
+          activeList = hotList;
+        } else if (targetCat === foundNewArrival?.id) {
+          activeList = newArrivalList;
+        } else if (targetCat === 'all') {
+          const deduped = new Map<number, WcProduct>();
+          for (const item of [...hotList, ...newArrivalList]) {
+            if (!deduped.has(item.id)) deduped.set(item.id, item);
+          }
+          activeList = Array.from(deduped.values());
+        } else {
+          activeList = await fetchWcProducts({
+            category: targetCat,
+            perPage: 100,
+          });
+        }
+
         setHotSellingProducts(hotList);
-        setGoinfoevProducts(goList);
         setNewArrivalProducts(newArrivalList);
         setProducts(activeList);
 
-        syncThumbnailsFromProducts([
-          ...hotList,
-          ...goList,
-          ...newArrivalList,
-          ...activeList,
-        ]);
+        syncThumbnailsFromProducts([...hotList, ...newArrivalList, ...activeList]);
 
-        const allCombined = [
-          ...hotList,
-          ...goList,
-          ...newArrivalList,
-          ...activeList,
-        ];
+        const allCombined = [...hotList, ...newArrivalList, ...activeList];
 
         setWishlistProducts((prev) =>
           prev.map((saved) => {
@@ -377,12 +378,39 @@ export default function App() {
     }
   }, [initialRoute.page, initialRoute.productId, pushPath]);
 
+  const loadStorefrontConfig = useCallback(async () => {
+    try {
+      const cfg = await fetchStorefrontConfig();
+      if (cfg.settings) setStorefrontSettings(cfg.settings);
+      if (cfg.placements) setProductPlacements(cfg.placements);
+    } catch {
+      // Keep graceful defaults if storefront config endpoint is unavailable
+    }
+  }, []);
+
+  const handleStorefrontConfigUpdated = useCallback(
+    (patch: Partial<StorefrontConfigResponse>) => {
+      if (patch.settings) setStorefrontSettings(patch.settings);
+      if (patch.placements) setProductPlacements(patch.placements);
+    },
+    []
+  );
+
   useEffect(() => {
+    if (currentPage === 'admin') {
+      document.title = 'Admin Panel — FiftyDollarShop.com';
+      return;
+    }
+    document.title =
+      "FiftyDollarShop.com — Everything $50 Only | USA's Hot Selling Products";
+
     loadCategoriesAndProducts(undefined, false);
     loadCart();
+    loadStorefrontConfig();
 
     const handleFocus = () => {
       loadCategoriesAndProducts(undefined, true);
+      loadStorefrontConfig();
     };
     window.addEventListener('focus', handleFocus);
     const interval = window.setInterval(() => {
@@ -393,7 +421,7 @@ export default function App() {
       window.removeEventListener('focus', handleFocus);
       window.clearInterval(interval);
     };
-  }, [loadCategoriesAndProducts, loadCart]);
+  }, [currentPage, loadCategoriesAndProducts, loadCart, loadStorefrontConfig]);
 
   useEffect(() => {
     saveWishlistToStorage(wishlistProducts);
@@ -457,9 +485,9 @@ export default function App() {
     }, 40);
   };
 
-  const scrollToGoinfoev = () => {
+  const scrollToNewArrivals = () => {
     window.setTimeout(() => {
-      goinfoevRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      newArrivalRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 40);
   };
 
@@ -703,23 +731,54 @@ export default function App() {
     }
   };
 
+  // Non-destructive storefront placement helper (filters hidden & prioritizes featured without modifying WooCommerce prices/data)
+  const applyStorefrontPlacement = useCallback(
+    (list: WcProduct[]): WcProduct[] => {
+      const visible = list.filter((p) => !productPlacements[p.id]?.hidden);
+      return [...visible].sort((a, b) => {
+        const featA = productPlacements[a.id]?.featured ? 1 : 0;
+        const featB = productPlacements[b.id]?.featured ? 1 : 0;
+        return featB - featA;
+      });
+    },
+    [productPlacements]
+  );
+
+  const visibleHotSellingProducts = useMemo(
+    () => applyStorefrontPlacement(hotSellingProducts),
+    [hotSellingProducts, applyStorefrontPlacement]
+  );
+
+  const visibleNewArrivalProducts = useMemo(
+    () => applyStorefrontPlacement(newArrivalProducts),
+    [newArrivalProducts, applyStorefrontPlacement]
+  );
+
+  const visibleActiveProducts = useMemo(
+    () => applyStorefrontPlacement(products),
+    [products, applyStorefrontPlacement]
+  );
+
   const allSearchableProducts = useMemo(() => {
     const map = new Map<number, WcProduct>();
     for (const p of [
-      ...hotSellingProducts,
-      ...goinfoevProducts,
-      ...newArrivalProducts,
-      ...products,
+      ...visibleHotSellingProducts,
+      ...visibleNewArrivalProducts,
+      ...visibleActiveProducts,
     ]) {
       map.set(p.id, p);
     }
     return Array.from(map.values());
-  }, [hotSellingProducts, goinfoevProducts, newArrivalProducts, products]);
+  }, [
+    visibleHotSellingProducts,
+    visibleNewArrivalProducts,
+    visibleActiveProducts,
+  ]);
 
-  // Dynamic New Arrivals from the dedicated WooCommerce "New Arrival" category (fallback to newest-first if empty)
+  // Dynamic New Arrivals from the dedicated "New Arrival" category (fallback to newest-first if empty)
   const displayedNewArrivals = useMemo(() => {
-    if (newArrivalProducts.length > 0) {
-      return newArrivalProducts;
+    if (visibleNewArrivalProducts.length > 0) {
+      return visibleNewArrivalProducts;
     }
     return [...allSearchableProducts].sort((a, b) => {
       const timeA = a.date_created ? Date.parse(a.date_created) : 0;
@@ -727,7 +786,7 @@ export default function App() {
       if (timeB !== timeA) return timeB - timeA;
       return b.id - a.id;
     });
-  }, [newArrivalProducts, allSearchableProducts]);
+  }, [visibleNewArrivalProducts, allSearchableProducts]);
 
   const cartCount = cart?.items_count ?? 0;
   const activeCatValue: number | 'all' = selectedCategoryId ?? 'all';
@@ -737,6 +796,21 @@ export default function App() {
       : currentPage === 'category'
         ? `category-${activeCatValue}`
         : currentPage;
+
+  // Dedicated full-screen Admin Panel at /admin (clean separation from customer storefront chrome)
+  if (currentPage === 'admin') {
+    return (
+      <MotionConfig reducedMotion="user">
+        <AdminPage
+          onExitToStorefront={() => {
+            void loadStorefrontConfig();
+            handleNavigate('home');
+          }}
+          onStorefrontConfigUpdated={handleStorefrontConfigUpdated}
+        />
+      </MotionConfig>
+    );
+  }
 
   return (
     <MotionConfig reducedMotion="user">
@@ -758,6 +832,7 @@ export default function App() {
           searchQuery={searchQuery}
           cartCount={cartCount}
           wishlistCount={wishlistProducts.length}
+          announcementText={storefrontSettings?.announcementText}
           onNavigate={handleNavigate}
           onOpenSearch={() => setSearchOpen(true)}
           onOpenWishlist={() => setWishlistOpen(true)}
@@ -801,8 +876,15 @@ export default function App() {
               {currentPage === 'home' && (
                 <>
                   <HeroBanner
-                    productCount={hotSellingProducts.length || products.length}
-                    products={hotSellingProducts.length > 0 ? hotSellingProducts : products}
+                    productCount={
+                      visibleHotSellingProducts.length ||
+                      visibleActiveProducts.length
+                    }
+                    products={
+                      visibleHotSellingProducts.length > 0
+                        ? visibleHotSellingProducts
+                        : visibleActiveProducts
+                    }
                     onShopNow={scrollToCatalog}
                     onBrowseCategories={() => handleNavigate('categories')}
                     onSelectProduct={handleSelectProduct}
@@ -810,50 +892,52 @@ export default function App() {
 
                   <TrustBar />
 
-                  {/* New Arrivals: Single-Row Carousel synced to WooCommerce New Arrival Category */}
-                  <NewArrivalsCarousel
-                    category={newArrivalCategory}
-                    products={displayedNewArrivals}
-                    loading={loadingCatalog}
-                    addingProductId={addingProductId}
-                    justAddedProductId={justAddedProductId}
-                    wishlistIds={wishlistIds}
-                    onToggleWishlist={handleToggleWishlist}
-                    compareIds={compareProducts.map((item) => item.id)}
-                    onToggleCompare={handleToggleCompare}
-                    onSelectProduct={handleSelectProduct}
-                    onQuickView={(p) => setQuickViewProduct(p)}
-                    onSelectCategoryId={handleOpenCategory}
-                    onViewAllArrivals={() =>
-                      handleOpenCategory(newArrivalCategory ?? 'all')
-                    }
-                    onAddToCart={(p, variationId, variationAttrs, selectedAttrsMap) =>
-                      handleAddToCart(p, 1, variationId, variationAttrs, selectedAttrsMap)
-                    }
-                  />
+                  {/* New Arrivals: Single-Row Carousel synced to New Arrival Category */}
+                  <div ref={newArrivalRef}>
+                    <NewArrivalsCarousel
+                      category={newArrivalCategory}
+                      products={displayedNewArrivals}
+                      loading={loadingCatalog}
+                      addingProductId={addingProductId}
+                      justAddedProductId={justAddedProductId}
+                      wishlistIds={wishlistIds}
+                      onToggleWishlist={handleToggleWishlist}
+                      compareIds={compareProducts.map((item) => item.id)}
+                      onToggleCompare={handleToggleCompare}
+                      onSelectProduct={handleSelectProduct}
+                      onQuickView={(p) => setQuickViewProduct(p)}
+                      onSelectCategoryId={handleOpenCategory}
+                      onViewAllArrivals={() =>
+                        handleOpenCategory(newArrivalCategory ?? 'all')
+                      }
+                      onAddToCart={(p, variationId, variationAttrs, selectedAttrsMap) =>
+                        handleAddToCart(p, 1, variationId, variationAttrs, selectedAttrsMap)
+                      }
+                    />
+                  </div>
 
                   <CollectionSplitBanner
                     hotCategory={hotCategory}
-                    goinfoevCategory={goinfoevCategory}
+                    newArrivalCategory={newArrivalCategory}
                     hotThumb={
-                      hotSellingProducts[0]?.images?.[0]?.src ||
+                      visibleHotSellingProducts[0]?.images?.[0]?.src ||
                       (hotCategory ? categoryThumbnails[hotCategory.id] : undefined)
                     }
-                    goinfoevThumb={
-                      goinfoevProducts[0]?.images?.[0]?.src ||
-                      (goinfoevCategory ? categoryThumbnails[goinfoevCategory.id] : undefined)
+                    newArrivalThumb={
+                      visibleNewArrivalProducts[0]?.images?.[0]?.src ||
+                      (newArrivalCategory ? categoryThumbnails[newArrivalCategory.id] : undefined)
                     }
                     onJumpToHot={scrollToCatalog}
-                    onJumpToGoinfoev={scrollToGoinfoev}
+                    onJumpToNewArrivals={scrollToNewArrivals}
                     onOpenCategoryPage={(cat) => handleOpenCategory(cat)}
                   />
 
-                  {/* Section 1: Hot Selling 50$ Products (4 per row -> 8 initial + Load More) */}
+                  {/* Hot Selling 50$ Products (4 per row -> 8 initial + Load More) */}
                   <div ref={catalogRef}>
                     <ProductGrid
                       sectionId="hot-selling-section"
                       sectionBg="white"
-                      products={hotSellingProducts}
+                      products={visibleHotSellingProducts}
                       categories={categories}
                       selectedCategoryId={hotCategory?.id ?? 18}
                       showCategorySelector={false}
@@ -884,46 +968,12 @@ export default function App() {
                     />
                   </div>
 
-                  {/* Section 2: GOINFOEV Category Section (4 per row -> 8 initial + Load More) */}
-                  <div ref={goinfoevRef}>
-                    <ProductGrid
-                      sectionId="goinfoev-section"
-                      sectionBg="chalk"
-                      products={goinfoevProducts}
-                      categories={categories}
-                      selectedCategoryId={goinfoevCategory?.id ?? 15}
-                      showCategorySelector={false}
-                      gridColumns={4}
-                      initialVisibleCount={8}
-                      loadMoreStep={8}
-                      searchQuery={goinfoevSearchQuery}
-                      loading={loadingCatalog}
-                      error={catalogError}
-                      addingProductId={addingProductId}
-                      justAddedProductId={justAddedProductId}
-                      wishlistIds={wishlistIds}
-                      onToggleWishlist={handleToggleWishlist}
-                      compareIds={compareProducts.map((item) => item.id)}
-                      onToggleCompare={handleToggleCompare}
-                      onSelectCategoryId={handleOpenCategory}
-                      onViewAllCategories={() => handleNavigate('categories')}
-                      onViewFullCategory={
-                        goinfoevCategory
-                          ? () => handleOpenCategory(goinfoevCategory)
-                          : undefined
-                      }
-                      onSearchChange={setGoinfoevSearchQuery}
-                      onRefresh={() => loadCategoriesAndProducts(activeCatValue, false)}
-                      onSelectProduct={handleSelectProduct}
-                      onQuickView={(p) => setQuickViewProduct(p)}
-                      onAddToCart={(p, variationId, variationAttrs, selectedAttrsMap) =>
-                        handleAddToCart(p, 1, variationId, variationAttrs, selectedAttrsMap)
-                      }
-                    />
-                  </div>
-
                   <WhyFiftySection
-                    products={hotSellingProducts.length > 0 ? hotSellingProducts : products}
+                    products={
+                      visibleHotSellingProducts.length > 0
+                        ? visibleHotSellingProducts
+                        : visibleActiveProducts
+                    }
                     onSelectProduct={handleSelectProduct}
                   />
                 </>
@@ -936,7 +986,7 @@ export default function App() {
                     <ProductGrid
                       sectionId="category-catalog-section"
                       sectionBg="white"
-                      products={products}
+                      products={visibleActiveProducts}
                       categories={categories}
                       selectedCategoryId={activeCatValue}
                       isCategoryPage={currentPage === 'category'}
@@ -1003,7 +1053,10 @@ export default function App() {
                   isWishlisted={wishlistIds.includes(selectedProduct.id)}
                   onToggleWishlist={handleToggleWishlist}
                   onBack={() => {
-                    const cat = selectedProduct.categories?.[0];
+                    const cat =
+                      selectedProduct.categories?.find((c) =>
+                        isAllowedStoreCategory(c)
+                      ) || hotCategory;
                     if (cat) {
                       handleOpenCategory(cat.id);
                     } else {
@@ -1046,7 +1099,12 @@ export default function App() {
           </AnimatePresence>
         </main>
 
-        <Footer onNavigate={handleNavigate} />
+        <Footer
+          onNavigate={handleNavigate}
+          supportEmail={storefrontSettings?.supportEmail}
+          instagramUrl={storefrontSettings?.instagramUrl}
+          facebookUrl={storefrontSettings?.facebookUrl}
+        />
 
         <CartDrawer
           open={cartOpen}

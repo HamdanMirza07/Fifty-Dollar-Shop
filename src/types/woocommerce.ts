@@ -34,11 +34,13 @@ export interface WcAttribute {
 
 export interface WcVariationDetail {
   id: number;
+  sku?: string;
   price: string;
   regular_price: string;
   sale_price: string;
   on_sale?: boolean;
   stock_status: 'instock' | 'outofstock' | 'onbackorder' | string;
+  stock_quantity?: number | null;
   purchasable?: boolean;
   attributes: Array<{
     id: number;
@@ -186,4 +188,5 @@ export type AppPage =
   | 'contact'
   | 'shipping-policy'
   | 'return-policy'
-  | 'privacy-policy';
+  | 'privacy-policy'
+  | 'admin';

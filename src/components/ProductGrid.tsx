@@ -5,9 +5,6 @@ import type { WcCategory, WcProduct } from '../types/woocommerce';
 import {
   COLLECTION_TABS,
   type CollectionFilter,
-  GOINFOEV_TABS,
-  type GoinfoevFilter,
-  classifyGoinfoevCollection,
   classifyProductCollection,
   decodeHtmlEntities,
   stripHtmlToText,
@@ -89,13 +86,12 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
   onAddToCart,
 }) => {
   const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('all');
-  const [goinfoevFilter, setGoinfoevFilter] = useState<GoinfoevFilter>('all');
   const [sortBy, setSortBy] = useState<'featured' | 'az' | 'newest'>('featured');
   const [visibleCount, setVisibleCount] = useState<number>(initialVisibleCount);
 
   useEffect(() => {
     setVisibleCount(initialVisibleCount);
-  }, [initialVisibleCount, selectedCategoryId, collectionFilter, goinfoevFilter, searchQuery]);
+  }, [initialVisibleCount, selectedCategoryId, collectionFilter, searchQuery]);
 
   const activeCategory = useMemo(() => {
     if (selectedCategoryId === 'all') return null;
@@ -120,12 +116,6 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
     (activeCategory?.slug === 'hot-sale' ||
       categoryTitle.toLowerCase().includes('hot selling'));
 
-  const isGoinfoev =
-    !hideSubTabs &&
-    selectedCategoryId !== 'all' &&
-    (activeCategory?.slug === 'goinfoev' ||
-      categoryTitle.toLowerCase().includes('goinfoev'));
-
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     let list = products.filter((p) => {
@@ -133,13 +123,6 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
         isHotSelling &&
         collectionFilter !== 'all' &&
         classifyProductCollection(p) !== collectionFilter
-      ) {
-        return false;
-      }
-      if (
-        isGoinfoev &&
-        goinfoevFilter !== 'all' &&
-        classifyGoinfoevCollection(p) !== goinfoevFilter
       ) {
         return false;
       }
@@ -156,15 +139,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
       list = [...list].sort((a, b) => b.id - a.id);
     }
     return list;
-  }, [
-    products,
-    isHotSelling,
-    isGoinfoev,
-    collectionFilter,
-    goinfoevFilter,
-    searchQuery,
-    sortBy,
-  ]);
+  }, [products, isHotSelling, collectionFilter, searchQuery, sortBy]);
 
   const displayedProducts = useMemo(
     () => filteredProducts.slice(0, visibleCount),
@@ -176,7 +151,6 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
 
   const handleResetFilters = () => {
     setCollectionFilter('all');
-    setGoinfoevFilter('all');
     onSearchChange('');
   };
 
@@ -241,7 +215,6 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
                   onChange={(e) => {
                     const val = e.target.value;
                     setCollectionFilter('all');
-                    setGoinfoevFilter('all');
                     onSelectCategoryId(val === 'all' ? 'all' : Number(val));
                   }}
                   className="h-10 px-3.5 rounded-full border border-[#E2E5EC] bg-[#F4F5F8] text-[13.5px] text-[#0B0F19] font-medium focus:outline-2 focus:outline-[#0B0F19] transition-colors"
@@ -324,29 +297,6 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
                     </button>
                   );
                 })
-              ) : isGoinfoev ? (
-                GOINFOEV_TABS.map((tab) => {
-                  const active = goinfoevFilter === tab.id;
-                  return (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setGoinfoevFilter(tab.id)}
-                      className={`relative px-4 py-2 rounded-full text-[13px] font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
-                        active ? 'text-white' : 'text-[#5A6275] hover:text-[#0B0F19]'
-                      }`}
-                    >
-                      {active && (
-                        <motion.span
-                          layoutId={`${sectionId}-go-tab-bg`}
-                          transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-                          className="absolute inset-0 bg-[#0B0F19] rounded-full"
-                        />
-                      )}
-                      <span className="relative z-10">{tab.label}</span>
-                    </button>
-                  );
-                })
               ) : (
                 categories.map((cat) => {
                   const active = selectedCategoryId === cat.id;
@@ -356,7 +306,6 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
                       type="button"
                       onClick={() => {
                         setCollectionFilter('all');
-                        setGoinfoevFilter('all');
                         onSelectCategoryId(cat.id);
                       }}
                       className={`relative px-4 py-2 rounded-full text-[13px] font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${

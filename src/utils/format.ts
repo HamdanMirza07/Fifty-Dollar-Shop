@@ -294,42 +294,19 @@ export function getDefaultAttributes(product: WcProduct): Record<string, string>
   return defaults;
 }
 
-export type GoinfoevFilter =
-  | 'all'
-  | 'activewear-apparel'
-  | 'beauty-care'
-  | 'smart-lifestyle';
-
-export const GOINFOEV_TABS: Array<{ id: GoinfoevFilter; label: string }> = [
-  { id: 'all', label: 'All GOINFOEV' },
-  { id: 'activewear-apparel', label: 'Activewear & Apparel' },
-  { id: 'beauty-care', label: 'Beauty & Care' },
-  { id: 'smart-lifestyle', label: 'Smart & Lifestyle' },
-];
-
-export function classifyGoinfoevCollection(product: WcProduct): GoinfoevFilter {
-  const name = decodeHtmlEntities(product.name).toLowerCase();
-  if (
-    name.includes('sweater') ||
-    name.includes('bra') ||
-    name.includes('legging') ||
-    name.includes('skirt') ||
-    name.includes('waist') ||
-    name.includes('belt') ||
-    name.includes('handbag')
-  ) {
-    return 'activewear-apparel';
-  }
-  if (
-    name.includes('lip') ||
-    name.includes('body milk') ||
-    name.includes('foundation') ||
-    name.includes('beauty') ||
-    name.includes('moisturizing')
-  ) {
-    return 'beauty-care';
-  }
-  return 'smart-lifestyle';
+export function isAllowedStoreCategory(cat: {
+  name?: string;
+  slug?: string;
+}): boolean {
+  const slug = (cat.slug || '').toLowerCase();
+  const name = (cat.name || '').toLowerCase();
+  return (
+    slug === 'hot-sale' ||
+    name.includes('hot selling') ||
+    slug === 'new-arrival' ||
+    slug === 'new-arrivals' ||
+    name.includes('new arrival')
+  );
 }
 
 const SWATCH_MAP: Array<[string, string]> = [

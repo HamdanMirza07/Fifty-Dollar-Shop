@@ -31,7 +31,7 @@ export const CategoriesView: React.FC<CategoriesViewProps> = ({
             </p>
             <h1 className="type-h1 text-[#0B0F19]">Shop by Category</h1>
             <p className="type-body text-[#5A6275] mt-2 max-w-2xl">
-              Browse our flagship $50 hot-selling collection or explore our curated store categories.
+              Explore our two curated $50 flat-price collections — Hot Selling 50$ Products and New Arrival.
             </p>
           </div>
 
@@ -48,8 +48,8 @@ export const CategoriesView: React.FC<CategoriesViewProps> = ({
         </div>
 
         {loading && categories.length === 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {Array.from({ length: 3 }).map((_, idx) => (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-7">
+            {Array.from({ length: 2 }).map((_, idx) => (
               <div
                 key={idx}
                 className="bg-white rounded-2xl border border-[#E2E5EC] p-5 animate-pulse"
@@ -68,7 +68,7 @@ export const CategoriesView: React.FC<CategoriesViewProps> = ({
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-7">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-7">
             {categories.map((cat, idx) => {
               const title = decodeHtmlEntities(cat.name);
               const desc = stripHtmlToText(cat.description);

@@ -6,11 +6,11 @@ import { decodeHtmlEntities } from '../utils/format';
 
 interface CollectionSplitBannerProps {
   hotCategory?: WcCategory;
-  goinfoevCategory?: WcCategory;
+  newArrivalCategory?: WcCategory;
   hotThumb?: string;
-  goinfoevThumb?: string;
+  newArrivalThumb?: string;
   onJumpToHot: () => void;
-  onJumpToGoinfoev: () => void;
+  onJumpToNewArrivals: () => void;
   onOpenCategoryPage: (cat: WcCategory) => void;
 }
 
@@ -18,19 +18,19 @@ const easeCurve: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
 export const CollectionSplitBanner: React.FC<CollectionSplitBannerProps> = ({
   hotCategory,
-  goinfoevCategory,
+  newArrivalCategory,
   hotThumb,
-  goinfoevThumb,
+  newArrivalThumb,
   onJumpToHot,
-  onJumpToGoinfoev,
+  onJumpToNewArrivals,
   onOpenCategoryPage,
 }) => {
   const hotName = hotCategory
     ? decodeHtmlEntities(hotCategory.name)
     : 'Hot Selling 50$ Products';
-  const goName = goinfoevCategory
-    ? decodeHtmlEntities(goinfoevCategory.name)
-    : 'GOINFOEV';
+  const newArrivalName = newArrivalCategory
+    ? decodeHtmlEntities(newArrivalCategory.name)
+    : 'New Arrival';
 
   return (
     <section
@@ -43,15 +43,15 @@ export const CollectionSplitBanner: React.FC<CollectionSplitBannerProps> = ({
             <p className="text-[12px] font-mono font-semibold text-[#122B5C] mb-1.5">
               Curated Store Collections
             </p>
-            <h2 className="type-h2 text-[#0B0F19]">Two Live Collections, Direct Pricing</h2>
+            <h2 className="type-h2 text-[#0B0F19]">Two Live Collections, Always $50 Flat</h2>
           </div>
           <p className="text-[14px] text-[#5A6275] max-w-md">
-            Browse our flagship $50 flat-price bestsellers or explore activewear, beauty, and lifestyle drops in GOINFOEV.
+            Shop our top-selling $50 USA bestsellers or discover freshly added drops in New Arrival — every order ships free.
           </p>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Collection 01: High-Contrast Midnight Architectural Feature Card */}
+          {/* Collection 01: Hot Selling 50$ Products */}
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -78,7 +78,7 @@ export const CollectionSplitBanner: React.FC<CollectionSplitBannerProps> = ({
                   onClick={onJumpToHot}
                   className="type-button px-5 py-2.5 rounded-full bg-[#E54826] hover:bg-[#CC3B1C] text-white inline-flex items-center gap-2 cursor-pointer transition-colors"
                 >
-                  <span>Shop $50 Deals</span>
+                  <span>Shop Hot Selling</span>
                   <ArrowRight className="w-4 h-4" aria-hidden="true" />
                 </button>
                 {hotCategory && (
@@ -107,7 +107,7 @@ export const CollectionSplitBanner: React.FC<CollectionSplitBannerProps> = ({
             </div>
           </motion.div>
 
-          {/* Collection 02: Crisp Gallery White Feature Card */}
+          {/* Collection 02: New Arrival */}
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -118,29 +118,29 @@ export const CollectionSplitBanner: React.FC<CollectionSplitBannerProps> = ({
             <div className="sm:col-span-7 flex flex-col justify-between gap-4">
               <div>
                 <p className="text-[12px] font-mono font-semibold text-[#122B5C] mb-1.5 tabular-nums">
-                  02 · {goinfoevCategory?.count ?? 14} Products · Active &amp; Lifestyle
+                  02 · {newArrivalCategory?.count ?? 8} Products · Just Dropped
                 </p>
                 <h3 className="font-heading font-bold text-[23px] sm:text-[26px] text-[#0B0F19] leading-tight mb-2">
-                  {goName}
+                  {newArrivalName}
                 </h3>
                 <p className="text-[14px] text-[#5A6275] leading-relaxed">
-                  Sculpting activewear, thermal fleece essentials, beauty care, and smart eyewear curated for everyday style.
+                  Freshly launched USA trending finds added weekly — handpicked quality at our signature $50 flat price.
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-3.5 pt-1">
                 <button
                   type="button"
-                  onClick={onJumpToGoinfoev}
+                  onClick={onJumpToNewArrivals}
                   className="type-button px-5 py-2.5 rounded-full bg-[#0B0F19] hover:bg-[#E54826] text-white inline-flex items-center gap-2 cursor-pointer transition-colors"
                 >
-                  <span>Explore {goName}</span>
+                  <span>Explore {newArrivalName}</span>
                   <ArrowRight className="w-4 h-4" aria-hidden="true" />
                 </button>
-                {goinfoevCategory && (
+                {newArrivalCategory && (
                   <button
                     type="button"
-                    onClick={() => onOpenCategoryPage(goinfoevCategory)}
+                    onClick={() => onOpenCategoryPage(newArrivalCategory)}
                     className="text-[13px] font-heading font-semibold text-[#0B0F19] hover:text-[#E54826] underline-offset-4 hover:underline cursor-pointer"
                   >
                     Category Page
@@ -150,10 +150,10 @@ export const CollectionSplitBanner: React.FC<CollectionSplitBannerProps> = ({
             </div>
 
             <div className="sm:col-span-5 aspect-square rounded-2xl bg-[#F4F5F8] overflow-hidden flex items-center justify-center p-4">
-              {goinfoevThumb ? (
+              {newArrivalThumb ? (
                 <img
-                  src={goinfoevThumb}
-                  alt={goName}
+                  src={newArrivalThumb}
+                  alt={newArrivalName}
                   referrerPolicy="no-referrer"
                   className="w-full h-full object-contain mix-blend-multiply transition-transform duration-500 group-hover:scale-105"
                 />

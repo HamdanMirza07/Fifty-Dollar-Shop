@@ -1,5 +1,28 @@
 import express from 'express';
 import type { NextFunction, Request, Response, Router } from 'express';
+import {
+  ADMIN_COOKIE_NAME,
+  bulkUpsertPlacements,
+  claimFirstRunAdminPassword,
+  createAdminSessionToken,
+  getAdminAuthMode,
+  getOrderStatusOverrides,
+  getPlacements,
+  getStoredOrders,
+  getStorefrontSettings,
+  parseCookieHeader,
+  recordStorefrontOrder,
+  setOrderStatusOverride,
+  updateStorefrontSettings,
+  upsertProductPlacement,
+  verifyAdminCredential,
+  verifyAdminSessionToken,
+} from './_adminStore.ts';
+import type {
+  AdminOrderStatus,
+  StoredOrderLineItem,
+  StoredOrderRecord,
+} from './_adminStore.ts';
 
 interface NonceSession {
   nonce: string;
@@ -261,6 +284,54 @@ function normalizeStoreProduct(p: StoreApiProduct) {
   };
 }
 
+interface CategoryLike {
+  id: number;
+  name: string;
+  slug: string;
+}
+
+function isHotSellingCategory(cat: Pick<CategoryLike, 'name' | 'slug'>): boolean {
+  const slug = (cat.slug || '').toLowerCase();
+  const name = (cat.name || '').toLowerCase();
+  return slug === 'hot-sale' || name.includes('hot selling');
+}
+
+function isNewArrivalCategory(cat: Pick<CategoryLike, 'name' | 'slug'>): boolean {
+  const slug = (cat.slug || '').toLowerCase();
+  const name = (cat.name || '').toLowerCase();
+  return (
+    slug === 'new-arrival' ||
+    slug === 'new-arrivals' ||
+    name.includes('new arrival')
+  );
+}
+
+function isAllowedStoreCategory(cat: Pick<CategoryLike, 'name' | 'slug'>): boolean {
+  return isHotSellingCategory(cat) || isNewArrivalCategory(cat);
+}
+
+function filterAllowedCategories<T extends CategoryLike>(cats: T[]): T[] {
+  const filtered = cats.filter((c) => isAllowedStoreCategory(c));
+  return filtered.sort((a, b) => {
+    const rankA = isHotSellingCategory(a) ? 0 : 1;
+    const rankB = isHotSellingCategory(b) ? 0 : 1;
+    return rankA - rankB;
+  });
+}
+
+function sanitizeProductCategories<T>(product: T): T {
+  if (!product || typeof product !== 'object') return product;
+  const record = product as Record<string, unknown>;
+  if (!Array.isArray(record.categories)) return product;
+  const cleaned = (record.categories as CategoryLike[]).filter((c) =>
+    isAllowedStoreCategory(c)
+  );
+  return {
+    ...record,
+    categories: cleaned,
+  } as T;
+}
+
 async function fetchCategoriesSmart(): Promise<{
   status: number;
   data: unknown;
@@ -272,7 +343,10 @@ async function fetchCategoriesSmart(): Promise<{
         '/products/categories?per_page=100'
       );
       if (v3Resp.status === 200 && Array.isArray(v3Resp.data)) {
-        return v3Resp;
+        return {
+          status: 200,
+          data: filterAllowedCategories(v3Resp.data as CategoryLike[]),
+        };
       }
     } catch {
       // Fall through to public Store API
@@ -283,9 +357,10 @@ async function fetchCategoriesSmart(): Promise<{
     '/products/categories?per_page=100'
   );
   if (pubResp.status === 200 && Array.isArray(pubResp.data)) {
+    const normalized = pubResp.data.map(normalizeStoreCategory);
     return {
       status: 200,
-      data: pubResp.data.map(normalizeStoreCategory),
+      data: filterAllowedCategories(normalized),
     };
   }
   return pubResp;
@@ -312,7 +387,8 @@ async function proxyStoreApiRequest(
   req: Request,
   res: Response,
   endpointPath: string,
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST',
+  onJsonSuccess?: (status: number, json: unknown) => void
 ) {
   try {
     const { storeApi } = getWcConfig();
@@ -367,6 +443,13 @@ async function proxyStoreApiRequest(
     res.status(upstream.status);
     try {
       const json = JSON.parse(text);
+      if (onJsonSuccess) {
+        try {
+          onJsonSuccess(upstream.status, json);
+        } catch {
+          // Never interrupt checkout response on admin log failure
+        }
+      }
       return res.json(json);
     } catch {
       return res.status(502).json({
@@ -456,39 +539,71 @@ export function createApiRouter(): Router {
           ? req.query.search.trim().slice(0, 120)
           : '';
 
-      if (hasV3Credentials) {
-        try {
-          const params = new URLSearchParams();
-          if (categoryId) params.set('category', categoryId);
-          params.set('per_page', String(perPage));
-          params.set('status', 'publish');
-          if (searchTerm) params.set('search', searchTerm);
+      const fetchBySingleCategory = async (catId: string): Promise<Record<string, unknown>[]> => {
+        if (hasV3Credentials) {
+          try {
+            const params = new URLSearchParams();
+            if (catId) params.set('category', catId);
+            params.set('per_page', String(perPage));
+            params.set('status', 'publish');
+            if (searchTerm) params.set('search', searchTerm);
 
-          const v3Resp = await fetchWcV3<unknown>(
-            `/products?${params.toString()}`
-          );
-          if (v3Resp.status === 200 && Array.isArray(v3Resp.data)) {
-            res.setHeader('Cache-Control', 'no-store');
-            return res.status(200).json(v3Resp.data);
+            const v3Resp = await fetchWcV3<unknown>(
+              `/products?${params.toString()}`
+            );
+            if (v3Resp.status === 200 && Array.isArray(v3Resp.data)) {
+              return (v3Resp.data as Record<string, unknown>[]).map(
+                sanitizeProductCategories
+              );
+            }
+          } catch {
+            // Fall through to public Store API
           }
-        } catch {
-          // Fall through to public Store API
         }
+
+        const pubParams = new URLSearchParams();
+        if (catId) pubParams.set('category', catId);
+        pubParams.set('per_page', String(perPage));
+        if (searchTerm) pubParams.set('search', searchTerm);
+
+        const pubResp = await fetchWcStorePublic<StoreApiProduct[]>(
+          `/products?${pubParams.toString()}`
+        );
+        if (pubResp.status === 200 && Array.isArray(pubResp.data)) {
+          return pubResp.data
+            .map(normalizeStoreProduct)
+            .map(sanitizeProductCategories);
+        }
+        throw new Error('upstream_products_error');
+      };
+
+      // When "all" is requested, fetch strictly from the 2 allowed store categories and deduplicate
+      if (rawCategory === 'all') {
+        const catsResp = await fetchCategoriesSmart();
+        const allowedCats =
+          catsResp.status === 200 && Array.isArray(catsResp.data)
+            ? (catsResp.data as CategoryLike[])
+            : [];
+
+        const lists = await Promise.all(
+          allowedCats.map((c) => fetchBySingleCategory(String(c.id)))
+        );
+        const deduped = new Map<number, Record<string, unknown>>();
+        for (const list of lists) {
+          for (const item of list) {
+            const id = Number(item.id);
+            if (Number.isFinite(id) && !deduped.has(id)) {
+              deduped.set(id, item);
+            }
+          }
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json(Array.from(deduped.values()));
       }
 
-      const pubParams = new URLSearchParams();
-      if (categoryId) pubParams.set('category', categoryId);
-      pubParams.set('per_page', String(perPage));
-      if (searchTerm) pubParams.set('search', searchTerm);
-
-      const pubResp = await fetchWcStorePublic<StoreApiProduct[]>(
-        `/products?${pubParams.toString()}`
-      );
+      const items = await fetchBySingleCategory(categoryId);
       res.setHeader('Cache-Control', 'no-store');
-      if (pubResp.status === 200 && Array.isArray(pubResp.data)) {
-        return res.status(200).json(pubResp.data.map(normalizeStoreProduct));
-      }
-      return res.status(pubResp.status).json(pubResp.data);
+      return res.status(200).json(items);
     } catch {
       return res.status(502).json({
         code: 'store_products_error',
@@ -519,14 +634,14 @@ export function createApiRouter(): Router {
 
           if (productResp.status === 200) {
             res.setHeader('Cache-Control', 'no-store');
-            const enriched = {
+            const enriched = sanitizeProductCategories({
               ...productResp.data,
               variation_details:
                 variationsResp.status === 200 &&
                 Array.isArray(variationsResp.data)
                   ? variationsResp.data
                   : [],
-            };
+            });
             return res.status(200).json(enriched);
           }
         } catch {
@@ -539,7 +654,9 @@ export function createApiRouter(): Router {
       );
       res.setHeader('Cache-Control', 'no-store');
       if (pubResp.status === 200 && pubResp.data && typeof pubResp.data === 'object') {
-        return res.status(200).json(normalizeStoreProduct(pubResp.data));
+        return res
+          .status(200)
+          .json(sanitizeProductCategories(normalizeStoreProduct(pubResp.data)));
       }
       return res.status(pubResp.status).json(pubResp.data);
     } catch {
@@ -608,7 +725,73 @@ export function createApiRouter(): Router {
   });
 
   router.post('/wc/checkout', async (req: Request, res: Response) => {
-    return proxyStoreApiRequest(req, res, '/checkout', 'POST');
+    return proxyStoreApiRequest(
+      req,
+      res,
+      '/checkout',
+      'POST',
+      (status, json) => {
+        if (status < 200 || status >= 300 || !json || typeof json !== 'object') {
+          return;
+        }
+        const data = json as Record<string, unknown>;
+        const orderId = String(data.order_id || data.order_number || '').trim();
+        if (!orderId) return;
+        const billing = (data.billing_address ||
+          req.body?.billing_address ||
+          {}) as Record<string, unknown>;
+        const shipping = (data.shipping_address ||
+          req.body?.shipping_address ||
+          billing) as Record<string, unknown>;
+        const first = String(
+          shipping.first_name || billing.first_name || ''
+        ).trim();
+        const last = String(
+          shipping.last_name || billing.last_name || ''
+        ).trim();
+        const customerName = `${first} ${last}`.trim() || 'Storefront Customer';
+        const rawStatus = String(data.status || 'pending').toLowerCase();
+        const mappedStatus: AdminOrderStatus =
+          rawStatus === 'completed'
+            ? 'delivered'
+            : rawStatus === 'processing'
+              ? 'processing'
+              : rawStatus === 'cancelled' || rawStatus === 'failed'
+                ? 'cancelled'
+                : 'pending';
+
+        recordStorefrontOrder({
+          id: orderId,
+          orderNumber: String(data.order_number || orderId),
+          source: 'storefront',
+          createdAt: new Date().toISOString(),
+          status: mappedStatus,
+          customerName,
+          email: String(billing.email || ''),
+          phone: String(billing.phone || shipping.phone || ''),
+          shippingAddress: {
+            address1: String(shipping.address_1 || ''),
+            address2: String(shipping.address_2 || ''),
+            city: String(shipping.city || ''),
+            state: String(shipping.state || ''),
+            postcode: String(shipping.postcode || ''),
+            country: String(shipping.country || 'US'),
+          },
+          paymentMethod: String(
+            data.payment_method || req.body?.payment_method || 'card'
+          ),
+          paymentMethodTitle: String(
+            data.payment_method || req.body?.payment_method || 'Storefront Checkout'
+          ),
+          currency: 'USD',
+          total: '50.00',
+          customerNote: String(
+            data.customer_note || req.body?.customer_note || ''
+          ),
+          items: [],
+        });
+      }
+    );
   });
 
   router.post('/contact', (req: Request, res: Response) => {
@@ -642,6 +825,767 @@ export function createApiRouter(): Router {
         'Thanks for reaching out. Our USA support team will reply within 24 hours.',
       receivedAt: new Date().toISOString(),
       orderNumber: orderNumber || null,
+    });
+  });
+
+  // Public read-only storefront settings & placement IDs (zero sensitive data)
+  router.get('/storefront-config', (_req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({
+      settings: getStorefrontSettings(),
+      placements: getPlacements(),
+    });
+  });
+
+  // Read-only payment gateway boolean status (zero secrets exposed)
+  router.get('/stripe-status', (_req: Request, res: Response) => {
+    const stripeKey = (process.env.STRIPE_SECRET_KEY || '').trim();
+    const configured = stripeKey.length > 0;
+    const mode = !configured
+      ? 'not_configured'
+      : stripeKey.startsWith('sk_live_')
+        ? 'live'
+        : 'test';
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({
+      configured,
+      mode,
+      woocommerceCheckoutProxyActive: true,
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Admin Authentication & Protected Operations Console Routes (/api/admin/*)
+  // ---------------------------------------------------------------------------
+  const authRateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+  function adminAuthRateLimiter(
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) {
+    const ip =
+      (typeof req.headers['x-forwarded-for'] === 'string'
+        ? req.headers['x-forwarded-for'].split(',')[0].trim()
+        : '') ||
+      req.ip ||
+      req.socket?.remoteAddress ||
+      'unknown';
+    const now = Date.now();
+    const bucket = authRateBuckets.get(ip);
+    if (!bucket || now > bucket.resetAt) {
+      authRateBuckets.set(ip, { count: 1, resetAt: now + 15 * 60_000 });
+      return next();
+    }
+    bucket.count += 1;
+    if (bucket.count > 20) {
+      return res.status(429).json({
+        code: 'too_many_login_attempts',
+        message: 'Too many authentication attempts. Please try again later.',
+      });
+    }
+    return next();
+  }
+
+  function isHttpsRequest(req: Request): boolean {
+    const proto = String(req.headers['x-forwarded-proto'] || '').toLowerCase();
+    return req.secure || proto.includes('https');
+  }
+
+  function setAdminSessionCookie(req: Request, res: Response, token: string) {
+    const secure = isHttpsRequest(req);
+    const attrs = [
+      `${ADMIN_COOKIE_NAME}=${encodeURIComponent(token)}`,
+      'Path=/',
+      'HttpOnly',
+      'Max-Age=43200',
+    ];
+    if (secure) {
+      attrs.push('Secure', 'SameSite=None', 'Partitioned');
+    } else {
+      attrs.push('SameSite=Lax');
+    }
+    res.setHeader('Set-Cookie', attrs.join('; '));
+  }
+
+  function clearAdminSessionCookie(req: Request, res: Response) {
+    const secure = isHttpsRequest(req);
+    const attrs = [
+      `${ADMIN_COOKIE_NAME}=`,
+      'Path=/',
+      'HttpOnly',
+      'Max-Age=0',
+    ];
+    if (secure) {
+      attrs.push('Secure', 'SameSite=None', 'Partitioned');
+    } else {
+      attrs.push('SameSite=Lax');
+    }
+    res.setHeader('Set-Cookie', attrs.join('; '));
+  }
+
+  function extractAdminToken(req: Request): {
+    token: string;
+    viaCookie: boolean;
+  } {
+    const authHeader = String(req.headers.authorization || '').trim();
+    if (authHeader.toLowerCase().startsWith('bearer ')) {
+      const bearer = authHeader.slice(7).trim();
+      if (bearer) return { token: bearer, viaCookie: false };
+    }
+    const cookies = parseCookieHeader(req.headers.cookie);
+    if (cookies[ADMIN_COOKIE_NAME]) {
+      return { token: cookies[ADMIN_COOKIE_NAME], viaCookie: true };
+    }
+    return { token: '', viaCookie: false };
+  }
+
+  function verifySameOriginOrHeader(req: Request): boolean {
+    if (req.headers['x-requested-with']) return true;
+    const origin = String(req.headers.origin || '').trim();
+    const host = String(
+      req.headers['x-forwarded-host'] || req.headers.host || ''
+    ).trim();
+    if (!origin || !host) return false;
+    try {
+      const originHost = new URL(origin).host;
+      return originHost === host;
+    } catch {
+      return false;
+    }
+  }
+
+  function requireAdminAuth(req: Request, res: Response, next: NextFunction) {
+    const { token, viaCookie } = extractAdminToken(req);
+    const session = verifyAdminSessionToken(token);
+    if (!session) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(401).json({
+        code: 'admin_unauthorized',
+        message: 'Admin authentication is required.',
+      });
+    }
+    const isMutation =
+      req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS';
+    if (viaCookie && isMutation && !verifySameOriginOrHeader(req)) {
+      return res.status(403).json({
+        code: 'csrf_check_failed',
+        message: 'Invalid request origin.',
+      });
+    }
+    return next();
+  }
+
+  router.get('/admin/auth/status', (req: Request, res: Response) => {
+    const { mode, needsSetup } = getAdminAuthMode();
+    const { token } = extractAdminToken(req);
+    const session = verifyAdminSessionToken(token);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({
+      authenticated: Boolean(session),
+      mode,
+      needsSetup,
+      expiresAt: session ? new Date(session.exp).toISOString() : undefined,
+    });
+  });
+
+  router.post(
+    '/admin/auth/setup',
+    adminAuthRateLimiter,
+    (req: Request, res: Response) => {
+      const password =
+        typeof req.body?.password === 'string' ? req.body.password : '';
+      const result = claimFirstRunAdminPassword(password);
+      if (!result.ok) {
+        return res.status(400).json({
+          code: 'admin_setup_failed',
+          message: result.error || 'Unable to configure admin password.',
+        });
+      }
+      const { token, expiresAt } = createAdminSessionToken();
+      setAdminSessionCookie(req, res, token);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        authenticated: true,
+        token,
+        expiresAt,
+        mode: 'claimed',
+      });
+    }
+  );
+
+  router.post(
+    '/admin/auth/login',
+    adminAuthRateLimiter,
+    (req: Request, res: Response) => {
+      const { needsSetup, mode } = getAdminAuthMode();
+      if (needsSetup) {
+        return res.status(400).json({
+          code: 'admin_setup_required',
+          message: 'Please complete first-run admin password setup first.',
+        });
+      }
+      const password =
+        typeof req.body?.password === 'string'
+          ? req.body.password
+          : typeof req.body?.token === 'string'
+            ? req.body.token
+            : '';
+
+      if (!verifyAdminCredential(password)) {
+        return res.status(401).json({
+          code: 'invalid_credentials',
+          message: 'Invalid admin password or access token.',
+        });
+      }
+
+      const { token, expiresAt } = createAdminSessionToken();
+      setAdminSessionCookie(req, res, token);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        authenticated: true,
+        token,
+        expiresAt,
+        mode,
+      });
+    }
+  );
+
+  router.post('/admin/auth/logout', (req: Request, res: Response) => {
+    clearAdminSessionCookie(req, res);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ ok: true, authenticated: false });
+  });
+
+  // Live WooCommerce catalog loader for Admin Panel (100% WooCommerce source of truth)
+  async function loadAllLiveWcProductsAndCategories() {
+    const { hasV3Credentials } = getWcConfig();
+    const catsResp = await fetchCategoriesSmart();
+    const categories =
+      catsResp.status === 200 && Array.isArray(catsResp.data)
+        ? (catsResp.data as CategoryLike[])
+        : [];
+
+    const fetchCategoryProducts = async (
+      catId: string
+    ): Promise<Record<string, unknown>[]> => {
+      if (hasV3Credentials) {
+        try {
+          const params = new URLSearchParams({
+            category: catId,
+            per_page: '100',
+            status: 'publish',
+          });
+          const v3Resp = await fetchWcV3<unknown>(
+            `/products?${params.toString()}`
+          );
+          if (v3Resp.status === 200 && Array.isArray(v3Resp.data)) {
+            return (v3Resp.data as Record<string, unknown>[]).map(
+              sanitizeProductCategories
+            );
+          }
+        } catch {
+          // Fall through to Store API
+        }
+      }
+      const pubParams = new URLSearchParams({
+        category: catId,
+        per_page: '100',
+      });
+      const pubResp = await fetchWcStorePublic<StoreApiProduct[]>(
+        `/products?${pubParams.toString()}`
+      );
+      if (pubResp.status === 200 && Array.isArray(pubResp.data)) {
+        return pubResp.data
+          .map(normalizeStoreProduct)
+          .map(sanitizeProductCategories);
+      }
+      return [];
+    };
+
+    const lists = await Promise.all(
+      categories.map((c) => fetchCategoryProducts(String(c.id)))
+    );
+    const deduped = new Map<number, Record<string, unknown>>();
+    for (const list of lists) {
+      for (const item of list) {
+        const id = Number(item.id);
+        if (Number.isFinite(id) && !deduped.has(id)) {
+          deduped.set(id, item);
+        }
+      }
+    }
+
+    return {
+      categories,
+      products: Array.from(deduped.values()),
+    };
+  }
+
+  router.get('/admin/catalog', requireAdminAuth, async (_req, res) => {
+    try {
+      const startedAt = Date.now();
+      const { categories, products } =
+        await loadAllLiveWcProductsAndCategories();
+      const latencyMs = Date.now() - startedAt;
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        syncedAt: new Date().toISOString(),
+        latencyMs,
+        categories,
+        products,
+        placements: getPlacements(),
+      });
+    } catch {
+      return res.status(502).json({
+        code: 'admin_catalog_error',
+        message: 'Unable to sync live WooCommerce catalog.',
+      });
+    }
+  });
+
+  router.get(
+    '/admin/products/:id/variations',
+    requireAdminAuth,
+    async (req, res) => {
+      const rawId = String(req.params.id || '');
+      if (!/^\d+$/.test(rawId)) {
+        return res.status(400).json({
+          code: 'invalid_product_id',
+          message: 'Product ID must be a positive integer.',
+        });
+      }
+      try {
+        const { hasV3Credentials } = getWcConfig();
+        if (hasV3Credentials) {
+          try {
+            const [prodResp, varResp] = await Promise.all([
+              fetchWcV3<Record<string, unknown>>(`/products/${rawId}`),
+              fetchWcV3<unknown[]>(`/products/${rawId}/variations?per_page=100`),
+            ]);
+            if (prodResp.status === 200) {
+              res.setHeader('Cache-Control', 'no-store');
+              return res.json({
+                product: sanitizeProductCategories(prodResp.data),
+                variations:
+                  varResp.status === 200 && Array.isArray(varResp.data)
+                    ? varResp.data
+                    : [],
+                fetchedAt: new Date().toISOString(),
+              });
+            }
+          } catch {
+            // Fall through to public Store API
+          }
+        }
+
+        const pubResp = await fetchWcStorePublic<StoreApiProduct>(
+          `/products/${rawId}`
+        );
+        if (
+          pubResp.status === 200 &&
+          pubResp.data &&
+          typeof pubResp.data === 'object'
+        ) {
+          const normalized = sanitizeProductCategories(
+            normalizeStoreProduct(pubResp.data)
+          );
+          res.setHeader('Cache-Control', 'no-store');
+          return res.json({
+            product: normalized,
+            variations: normalized.variation_details || [],
+            fetchedAt: new Date().toISOString(),
+          });
+        }
+        return res.status(pubResp.status).json({
+          code: 'variations_fetch_failed',
+          message: 'Unable to fetch product variations from WooCommerce.',
+        });
+      } catch {
+        return res.status(502).json({
+          code: 'variations_proxy_error',
+          message: 'Unable to reach WooCommerce variations endpoint.',
+        });
+      }
+    }
+  );
+
+  // Non-destructive storefront placement controls (keyed by WooCommerce Product ID)
+  router.get('/admin/placements', requireAdminAuth, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ placements: getPlacements() });
+  });
+
+  router.patch(
+    '/admin/placements/:productId',
+    requireAdminAuth,
+    (req, res) => {
+      const rawId = String(req.params.productId || '');
+      if (!/^\d+$/.test(rawId)) {
+        return res.status(400).json({
+          code: 'invalid_product_id',
+          message: 'Valid WooCommerce product ID is required.',
+        });
+      }
+      const featured =
+        typeof req.body?.featured === 'boolean' ? req.body.featured : undefined;
+      const hidden =
+        typeof req.body?.hidden === 'boolean' ? req.body.hidden : undefined;
+      if (featured === undefined && hidden === undefined) {
+        return res.status(400).json({
+          code: 'empty_patch',
+          message: 'Specify featured or hidden boolean flag.',
+        });
+      }
+      const record = upsertProductPlacement(Number(rawId), {
+        featured,
+        hidden,
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ placement: record, placements: getPlacements() });
+    }
+  );
+
+  router.post('/admin/placements/bulk', requireAdminAuth, (req, res) => {
+    const rawIds = Array.isArray(req.body?.productIds)
+      ? req.body.productIds
+      : [];
+    const productIds = rawIds
+      .map((n: unknown) => Number(n))
+      .filter((n: number) => Number.isInteger(n) && n > 0)
+      .slice(0, 200);
+    if (productIds.length === 0) {
+      return res.status(400).json({
+        code: 'invalid_product_ids',
+        message: 'Provide at least one valid WooCommerce product ID.',
+      });
+    }
+    const featured =
+      typeof req.body?.featured === 'boolean' ? req.body.featured : undefined;
+    const hidden =
+      typeof req.body?.hidden === 'boolean' ? req.body.hidden : undefined;
+    if (featured === undefined && hidden === undefined) {
+      return res.status(400).json({
+        code: 'empty_bulk_patch',
+        message: 'Specify featured or hidden flag for bulk update.',
+      });
+    }
+    const placements = bulkUpsertPlacements(productIds, { featured, hidden });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ updatedCount: productIds.length, placements });
+  });
+
+  // Live WooCommerce + Storefront Orders
+  function mapWcOrderStatus(raw: string): AdminOrderStatus {
+    const s = (raw || '').toLowerCase();
+    if (s === 'completed' || s === 'delivered') return 'delivered';
+    if (s === 'shipped') return 'shipped';
+    if (s === 'processing') return 'processing';
+    if (s === 'cancelled' || s === 'refunded' || s === 'failed') {
+      return 'cancelled';
+    }
+    return 'pending';
+  }
+
+  function normalizeWcV3Order(
+    raw: Record<string, unknown>,
+    overrides: Record<string, AdminOrderStatus>
+  ): StoredOrderRecord {
+    const id = String(raw.id || raw.number || '');
+    const billing = (raw.billing || {}) as Record<string, unknown>;
+    const shipping = (raw.shipping || {}) as Record<string, unknown>;
+    const first = String(shipping.first_name || billing.first_name || '').trim();
+    const last = String(shipping.last_name || billing.last_name || '').trim();
+    const customerName = `${first} ${last}`.trim() || 'Storefront Customer';
+
+    const rawItems = Array.isArray(raw.line_items)
+      ? (raw.line_items as Array<Record<string, unknown>>)
+      : [];
+    const items: StoredOrderLineItem[] = rawItems.map((li) => {
+      const meta = Array.isArray(li.meta_data)
+        ? (li.meta_data as Array<Record<string, unknown>>)
+        : [];
+      const attributes = meta
+        .filter(
+          (m) =>
+            typeof m.key === 'string' &&
+            !m.key.startsWith('_') &&
+            typeof m.value === 'string' &&
+            m.value.trim().length > 0
+        )
+        .map((m) => ({
+          name: String(m.display_key || m.key),
+          value: String(m.display_value || m.value),
+        }));
+
+      const qty = Math.max(Number(li.quantity || 1), 1);
+      const totalNum = Number(li.total || 0);
+      const unitPrice =
+        typeof li.price === 'number' || typeof li.price === 'string'
+          ? Number(li.price).toFixed(2)
+          : (totalNum / qty).toFixed(2);
+      const imgObj =
+        li.image && typeof li.image === 'object'
+          ? (li.image as Record<string, unknown>)
+          : null;
+
+      return {
+        productId: Number(li.product_id || 0),
+        variationId: Number(li.variation_id || 0) || undefined,
+        name: String(li.name || 'Product'),
+        sku: String(li.sku || ''),
+        quantity: qty,
+        unitPrice,
+        total: Number(li.total || 0).toFixed(2),
+        attributes,
+        image:
+          imgObj && typeof imgObj.src === 'string' ? imgObj.src : undefined,
+      };
+    });
+
+    const mappedStatus =
+      overrides[id] || mapWcOrderStatus(String(raw.status || 'pending'));
+
+    return {
+      id,
+      orderNumber: String(raw.number || id),
+      source: 'woocommerce',
+      createdAt: String(
+        raw.date_created_gmt || raw.date_created || new Date().toISOString()
+      ),
+      status: mappedStatus,
+      customerName,
+      email: String(billing.email || ''),
+      phone: String(billing.phone || shipping.phone || ''),
+      shippingAddress: {
+        address1: String(shipping.address_1 || billing.address_1 || ''),
+        address2: String(shipping.address_2 || billing.address_2 || ''),
+        city: String(shipping.city || billing.city || ''),
+        state: String(shipping.state || billing.state || ''),
+        postcode: String(shipping.postcode || billing.postcode || ''),
+        country: String(shipping.country || billing.country || 'US'),
+      },
+      paymentMethod: String(raw.payment_method || 'card'),
+      paymentMethodTitle: String(
+        raw.payment_method_title || raw.payment_method || 'Card / Checkout'
+      ),
+      currency: String(raw.currency || 'USD'),
+      total: Number(raw.total || 0).toFixed(2),
+      customerNote: String(raw.customer_note || ''),
+      items,
+    };
+  }
+
+  router.get('/admin/orders', requireAdminAuth, async (_req, res) => {
+    const overrides = getOrderStatusOverrides();
+    const localOrders = getStoredOrders();
+    const merged = new Map<string, StoredOrderRecord>();
+
+    const { hasV3Credentials } = getWcConfig();
+    let wcOrdersAvailable = false;
+
+    if (hasV3Credentials) {
+      try {
+        const resp = await fetchWcV3<unknown[]>('/orders?per_page=50');
+        if (resp.status === 200 && Array.isArray(resp.data)) {
+          wcOrdersAvailable = true;
+          for (const raw of resp.data) {
+            if (raw && typeof raw === 'object') {
+              const norm = normalizeWcV3Order(
+                raw as Record<string, unknown>,
+                overrides
+              );
+              if (norm.id) merged.set(norm.id, norm);
+            }
+          }
+        }
+      } catch {
+        // Gracefully fall back to captured storefront orders
+      }
+    }
+
+    for (const local of localOrders) {
+      if (!merged.has(local.id)) {
+        merged.set(local.id, local);
+      }
+    }
+
+    const orders = Array.from(merged.values()).sort(
+      (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
+    );
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({
+      orders,
+      wcOrdersAvailable,
+      fetchedAt: new Date().toISOString(),
+    });
+  });
+
+  const VALID_ORDER_STATUSES = new Set<AdminOrderStatus>([
+    'pending',
+    'processing',
+    'shipped',
+    'delivered',
+    'cancelled',
+  ]);
+
+  router.patch(
+    '/admin/orders/:orderId/status',
+    requireAdminAuth,
+    (req, res) => {
+      const orderId = String(req.params.orderId || '').trim();
+      if (!orderId || !/^[a-zA-Z0-9_-]{1,40}$/.test(orderId)) {
+        return res.status(400).json({
+          code: 'invalid_order_id',
+          message: 'Valid order ID is required.',
+        });
+      }
+      const status = String(req.body?.status || '').trim() as AdminOrderStatus;
+      if (!VALID_ORDER_STATUSES.has(status)) {
+        return res.status(400).json({
+          code: 'invalid_order_status',
+          message:
+            'Order status must be pending, processing, shipped, delivered, or cancelled.',
+        });
+      }
+      setOrderStatusOverride(orderId, status);
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ ok: true, orderId, status });
+    }
+  );
+
+  // Settings & Live WooCommerce Diagnostics
+  router.get('/admin/settings', requireAdminAuth, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ settings: getStorefrontSettings() });
+  });
+
+  function isSafeHttpUrl(val: string): boolean {
+    try {
+      const parsed = new URL(val);
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    } catch {
+      return false;
+    }
+  }
+
+  router.patch('/admin/settings', requireAdminAuth, (req, res) => {
+    const patch: Partial<{
+      supportEmail: string;
+      announcementText: string;
+      instagramUrl: string;
+      facebookUrl: string;
+    }> = {};
+
+    if (typeof req.body?.supportEmail === 'string') {
+      const email = req.body.supportEmail.trim().slice(0, 120);
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({
+          code: 'invalid_email',
+          message: 'Please enter a valid support email address.',
+        });
+      }
+      patch.supportEmail = email;
+    }
+
+    if (typeof req.body?.announcementText === 'string') {
+      patch.announcementText = req.body.announcementText.trim().slice(0, 180);
+    }
+
+    if (typeof req.body?.instagramUrl === 'string') {
+      const url = req.body.instagramUrl.trim().slice(0, 240);
+      if (url && !isSafeHttpUrl(url)) {
+        return res.status(400).json({
+          code: 'invalid_url',
+          message: 'Instagram URL must start with https:// or http://.',
+        });
+      }
+      patch.instagramUrl = url;
+    }
+
+    if (typeof req.body?.facebookUrl === 'string') {
+      const url = req.body.facebookUrl.trim().slice(0, 240);
+      if (url && !isSafeHttpUrl(url)) {
+        return res.status(400).json({
+          code: 'invalid_url',
+          message: 'Facebook URL must start with https:// or http://.',
+        });
+      }
+      patch.facebookUrl = url;
+    }
+
+    const updated = updateStorefrontSettings(patch);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ settings: updated });
+  });
+
+  router.get('/admin/diagnostics', requireAdminAuth, async (_req, res) => {
+    const { hasV3Credentials, baseUrl } = getWcConfig();
+    const startedAt = Date.now();
+    let connected = false;
+    let categoryCount = 0;
+    let productCount = 0;
+    let error: string | null = null;
+
+    try {
+      const { categories, products } =
+        await loadAllLiveWcProductsAndCategories();
+      connected = true;
+      categoryCount = categories.length;
+      productCount = products.length;
+    } catch (err) {
+      error =
+        err instanceof Error
+          ? err.message
+          : 'Unable to reach WooCommerce store endpoint.';
+    }
+
+    const latencyMs = Date.now() - startedAt;
+    const stripeKey = (process.env.STRIPE_SECRET_KEY || '').trim();
+    const stripeConfigured = stripeKey.length > 0;
+    const stripeMode = !stripeConfigured
+      ? 'not_configured'
+      : stripeKey.startsWith('sk_live_')
+        ? 'live'
+        : 'test';
+
+    const catalogIdConfigured = Boolean(
+      (process.env.META_CATALOG_ID || '').trim()
+    );
+    const accessTokenConfigured = Boolean(
+      (process.env.META_ACCESS_TOKEN || '').trim()
+    );
+    const pixelIdConfigured = Boolean((process.env.META_PIXEL_ID || '').trim());
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({
+      checkedAt: new Date().toISOString(),
+      storefrontBaseUrl: 'https://www.fiftydollarshop.com/',
+      woocommerce: {
+        connected,
+        mode: hasV3Credentials ? 'v3+store-fallback' : 'store-public',
+        storeOrigin: baseUrl,
+        latencyMs,
+        categoryCount,
+        productCount,
+        error,
+      },
+      paymentGateway: {
+        stripeConfigured,
+        stripeMode,
+        woocommerceCheckoutProxyActive: true,
+      },
+      metaCommerce: {
+        storefrontBaseUrl: 'https://www.fiftydollarshop.com/',
+        catalogIdConfigured,
+        accessTokenConfigured,
+        pixelIdConfigured,
+        status:
+          catalogIdConfigured && accessTokenConfigured
+            ? 'configured'
+            : 'ready_to_connect',
+      },
     });
   });
 

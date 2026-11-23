@@ -8,6 +8,7 @@ interface HeaderProps {
   searchQuery: string;
   cartCount: number;
   wishlistCount: number;
+  announcementText?: string;
   onNavigate: (page: AppPage) => void;
   onOpenSearch: () => void;
   onOpenWishlist: () => void;
@@ -19,6 +20,7 @@ export const Header: React.FC<HeaderProps> = ({
   searchQuery,
   cartCount,
   wishlistCount,
+  announcementText,
   onNavigate,
   onOpenSearch,
   onOpenWishlist,
@@ -51,10 +53,11 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <>
       {/* Slim Dismissible Announcement Strip */}
-      {bannerVisible && (
+      {bannerVisible && (announcementText === undefined || announcementText.trim().length > 0) && (
         <div className="bg-[#0B0F19] text-[#F4F5F8] text-[12px] font-medium h-8 px-4 flex items-center justify-center relative tracking-wide border-b border-white/10">
           <span className="truncate pr-6">
-            All-America Flat $50 Drop · Free Tracked USA Shipping · 30-Day Guarantee
+            {announcementText ||
+              'All-America Flat $50 Drop · Free Tracked USA Shipping · 30-Day Guarantee'}
           </span>
           <button
             type="button"
