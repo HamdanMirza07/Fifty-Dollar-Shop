@@ -104,6 +104,16 @@ function parseRouteFromLocation(): {
   return { page: 'home' };
 }
 
+function getProductUrlSlug(product: WcProduct): string {
+  const rawSlug = (product.slug || '').trim();
+  if (rawSlug) return rawSlug;
+  const fromName = decodeHtmlEntities(product.name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return fromName || String(product.id);
+}
+
 const PAGE_DEPTH: Record<AppPage, number> = {
   home: 0,
   shop: 1,
@@ -389,7 +399,17 @@ export default function App() {
   useEffect(() => {
     if (initialRoute.page === 'product' && initialRoute.productId) {
       fetchWcProductById(initialRoute.productId)
-        .then((prod) => setSelectedProduct(prod))
+        .then((prod) => {
+          setSelectedProduct(prod);
+          const canonicalPath = `/product/${encodeURIComponent(getProductUrlSlug(prod))}`;
+          if (window.location.pathname !== canonicalPath) {
+            window.history.replaceState(
+              {},
+              '',
+              `${canonicalPath}${window.location.search || ''}`
+            );
+          }
+        })
         .catch(() => {
           setCurrentPage('shop');
           pushPath('/shop');
@@ -399,7 +419,9 @@ export default function App() {
       fetchWcProducts({ perPage: 100 })
         .then((list) => {
           const matched = list.find(
-            (p) => (p.slug || '').trim().toLowerCase() === targetSlug
+            (p) =>
+              (p.slug || '').trim().toLowerCase() === targetSlug ||
+              getProductUrlSlug(p).toLowerCase() === targetSlug
           );
           if (matched) {
             setSelectedProduct(matched);
@@ -522,12 +544,20 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (currentPage === 'admin') {
+    if (currentPage === 'product' && selectedProduct) {
+      document.title = `${decodeHtmlEntities(selectedProduct.name)} — FiftyDollarShop.com`;
+    } else if (currentPage === 'admin') {
       document.title = 'Admin Panel — FiftyDollarShop.com';
+    } else {
+      document.title =
+        "FiftyDollarShop.com — Everything $50 Only | USA's Hot Selling Products";
+    }
+  }, [currentPage, selectedProduct]);
+
+  useEffect(() => {
+    if (currentPage === 'admin') {
       return;
     }
-    document.title =
-      "FiftyDollarShop.com — Everything $50 Only | USA's Hot Selling Products";
 
     loadCategoriesAndProducts(undefined, false);
     loadCart();
@@ -595,14 +625,58 @@ export default function App() {
         }
       } else if (parsed.page === 'product' && parsed.productId) {
         fetchWcProductById(parsed.productId)
-          .then((prod) => setSelectedProduct(prod))
+          .then((prod) => {
+            setSelectedProduct(prod);
+            const canonicalPath = `/product/${encodeURIComponent(getProductUrlSlug(prod))}`;
+            if (window.location.pathname !== canonicalPath) {
+              window.history.replaceState({}, '', canonicalPath);
+            }
+          })
           .catch(() => setCurrentPage('shop'));
+      } else if (parsed.page === 'product' && parsed.productSlug) {
+        const targetSlug = parsed.productSlug.trim().toLowerCase();
+        const combined = [...hotSellingProducts, ...newArrivalProducts, ...products];
+        const localMatch = combined.find(
+          (p) =>
+            (p.slug || '').trim().toLowerCase() === targetSlug ||
+            getProductUrlSlug(p).toLowerCase() === targetSlug
+        );
+        if (localMatch) {
+          setSelectedProduct(localMatch);
+          fetchWcProductById(localMatch.id)
+            .then((full) => setSelectedProduct(full))
+            .catch(() => {});
+        } else {
+          fetchWcProducts({ perPage: 100 })
+            .then((list) => {
+              const matched = list.find(
+                (p) =>
+                  (p.slug || '').trim().toLowerCase() === targetSlug ||
+                  getProductUrlSlug(p).toLowerCase() === targetSlug
+              );
+              if (matched) {
+                setSelectedProduct(matched);
+                return fetchWcProductById(matched.id)
+                  .then((full) => setSelectedProduct(full))
+                  .catch(() => {});
+              }
+              setCurrentPage('shop');
+            })
+            .catch(() => setCurrentPage('shop'));
+        }
       }
     };
 
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [categories, currentPage, loadCategoriesAndProducts]);
+  }, [
+    categories,
+    currentPage,
+    hotSellingProducts,
+    newArrivalProducts,
+    products,
+    loadCategoriesAndProducts,
+  ]);
 
   const scrollToCatalog = () => {
     window.setTimeout(() => {
@@ -684,10 +758,16 @@ export default function App() {
     pendingScrollResetRef.current = true;
     setSelectedProduct(product);
     setCurrentPage('product');
-    pushPath(`/product/${product.id}`);
+    pushPath(`/product/${encodeURIComponent(getProductUrlSlug(product))}`);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
     try {
       const fresh = await fetchWcProductById(product.id);
       setSelectedProduct(fresh);
+      const canonicalSlug = getProductUrlSlug(fresh);
+      const canonicalPath = `/product/${encodeURIComponent(canonicalSlug)}`;
+      if (window.location.pathname !== canonicalPath) {
+        window.history.replaceState({}, '', canonicalPath);
+      }
     } catch {
       // Keep card snapshot if individual detail refresh fails
     }
@@ -958,7 +1038,11 @@ export default function App() {
           cartCount={cartCount}
           wishlistCount={wishlistProducts.length}
           announcementText={storefrontSettings?.announcementText}
+          categories={categories}
+          products={allSearchableProducts}
           onNavigate={handleNavigate}
+          onSelectCategory={handleOpenCategory}
+          onSelectProduct={handleSelectProduct}
           onOpenSearch={() => setSearchOpen(true)}
           onOpenWishlist={() => setWishlistOpen(true)}
           onOpenCart={() => setCartOpen(true)}
@@ -1174,9 +1258,11 @@ export default function App() {
               {currentPage === 'product' && selectedProduct && (
                 <ProductDetailView
                   product={selectedProduct}
+                  allProducts={allSearchableProducts}
                   isAdding={addingProductId === selectedProduct.id}
                   isWishlisted={wishlistIds.includes(selectedProduct.id)}
                   onToggleWishlist={handleToggleWishlist}
+                  onSelectProduct={handleSelectProduct}
                   onBack={() => {
                     const cat =
                       selectedProduct.categories?.find((c) =>

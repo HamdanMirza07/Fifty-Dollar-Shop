@@ -27,6 +27,7 @@ import {
 interface ProductCardProps {
   product: WcProduct;
   index?: number;
+  disableReveal?: boolean;
   isAdding: boolean;
   justAdded: boolean;
   isWishlisted?: boolean;
@@ -53,6 +54,7 @@ function formatCompactOptionLabel(raw: string): string {
 export const ProductCard: React.FC<ProductCardProps> = ({
   product,
   index = 0,
+  disableReveal = false,
   isAdding,
   justAdded,
   isWishlisted = false,
@@ -181,14 +183,18 @@ export const ProductCard: React.FC<ProductCardProps> = ({
 
   return (
     <motion.article
-      initial={{ opacity: 0, y: 24 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, amount: 0.12 }}
-      transition={{
-        duration: 0.44,
-        delay: Math.min((index % 4) * 0.06, 0.18),
-        ease: [0.16, 1, 0.3, 1],
-      }}
+      initial={disableReveal ? false : { opacity: 0, y: 24 }}
+      whileInView={disableReveal ? undefined : { opacity: 1, y: 0 }}
+      viewport={disableReveal ? undefined : { once: true, amount: 0.12 }}
+      transition={
+        disableReveal
+          ? { duration: 0.2, ease: [0.16, 1, 0.3, 1] }
+          : {
+              duration: 0.44,
+              delay: Math.min((index % 4) * 0.06, 0.18),
+              ease: [0.16, 1, 0.3, 1],
+            }
+      }
       whileHover={{ y: -3 }}
       onMouseEnter={() => {
         if (resolvedProduct.variations.length > 1) {

@@ -819,38 +819,42 @@ export const AdminProductsTab: React.FC<AdminProductsTabProps> = ({
                       </td>
 
                       {/* Product Thumbnail + Title + #ID + SKU + Live Link */}
-                      <td className="py-3.5 px-3 align-middle">
-                        <div className="flex items-center gap-3">
+                      <td className="py-3.5 px-3 align-middle w-[280px] max-w-[280px]">
+                        <div className="flex items-center gap-3 w-[260px] max-w-[260px] overflow-hidden">
                           <div className="w-12 h-12 rounded-xl bg-[#F4F5F8] border border-[#E2E5EC] overflow-hidden flex items-center justify-center shrink-0">
                             {imgSrc ? (
                               <img
                                 src={imgSrc}
                                 alt={title}
-                                referrerPolicy="no-referrer"
+                                loading="lazy"
                                 className="w-full h-full object-contain p-1"
                               />
                             ) : (
                               <Package className="w-4 h-4 text-[#5A6275]" />
                             )}
                           </div>
-                          <div className="min-w-0 max-w-[260px]">
+                          <div className="min-w-0 flex-1 overflow-hidden">
                             <a
                               href={liveUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="font-heading font-semibold text-[13.5px] text-[#0B0F19] hover:text-[#E54826] transition-colors line-clamp-1 inline-flex items-center gap-1"
+                              className="font-heading font-semibold text-[13.5px] leading-snug text-[#0B0F19] hover:text-[#E54826] transition-colors flex items-start gap-1 max-w-full"
                               title={title}
                             >
-                              <span className="truncate">{title}</span>
+                              <span className="line-clamp-2 break-words min-w-0">
+                                {title}
+                              </span>
                               <ExternalLink
-                                className="w-3 h-3 shrink-0 text-[#5A6275]"
+                                className="w-3 h-3 shrink-0 mt-1 text-[#5A6275]"
                                 aria-hidden="true"
                               />
                             </a>
-                            <div className="flex items-center gap-1.5 text-[11.5px] font-mono text-[#5A6275] tabular-nums mt-0.5">
-                              <span>#{p.id}</span>
-                              <span aria-hidden="true">·</span>
-                              <span className="truncate">
+                            <div className="flex items-center gap-1.5 text-[11.5px] font-mono text-[#5A6275] tabular-nums mt-0.5 min-w-0">
+                              <span className="shrink-0">#{p.id}</span>
+                              <span aria-hidden="true" className="shrink-0">
+                                ·
+                              </span>
+                              <span className="truncate min-w-0">
                                 SKU: {p.sku || '—'}
                               </span>
                             </div>
@@ -859,8 +863,8 @@ export const AdminProductsTab: React.FC<AdminProductsTabProps> = ({
                       </td>
 
                       {/* WooCommerce Categories */}
-                      <td className="py-3.5 px-3 align-middle">
-                        <div className="text-[12.5px] text-[#0B0F19] max-w-[160px]">
+                      <td className="py-3.5 px-3 align-middle w-[160px] max-w-[160px]">
+                        <div className="text-[12.5px] leading-snug text-[#0B0F19] break-words">
                           {p.categories && p.categories.length > 0
                             ? p.categories
                                 .map((c) => decodeHtmlEntities(c.name))
