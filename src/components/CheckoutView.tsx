@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   ArrowLeft,
@@ -20,6 +20,7 @@ import {
   updateWcCustomer,
 } from '../api/woocommerce';
 import { US_STATES, decodeHtmlEntities, formatMinorPrice } from '../utils/format';
+import { trackInitiateCheckout, trackPurchase } from '../services/metaTracking';
 
 interface CheckoutViewProps {
   cart: WcCart | null;
@@ -68,10 +69,25 @@ export const CheckoutView: React.FC<CheckoutViewProps> = ({
     null
   );
   const [syncedHandoffUrl, setSyncedHandoffUrl] = useState<string | null>(null);
+  const hasTrackedCheckoutRef = useRef(false);
 
   const items = cart?.items ?? [];
   const minorUnit = cart?.totals?.currency_minor_unit ?? 2;
   const totalDisplay = formatMinorPrice(cart?.totals?.total_price ?? '0', minorUnit, true);
+
+  // Fire deduplicated InitiateCheckout (Browser Pixel + Server CAPI) once checkout loads with items
+  useEffect(() => {
+    if (
+      !hasTrackedCheckoutRef.current &&
+      !hydratingMetaCheckout &&
+      !orderConfirmation &&
+      cart &&
+      items.length > 0
+    ) {
+      hasTrackedCheckoutRef.current = true;
+      trackInitiateCheckout(cart, cart.billing_address);
+    }
+  }, [cart, hydratingMetaCheckout, items.length, orderConfirmation]);
 
   const buildStoreCartUrl = () => {
     const firstItem = items[0];
@@ -136,6 +152,21 @@ export const CheckoutView: React.FC<CheckoutViewProps> = ({
           payment_method: activeGateway,
           customer_note: customerNote.trim(),
         });
+        // Non-blocking deduplicated Purchase event (shared orderId-based event_id)
+        const confirmedOrderId = result.order_id || result.order_number;
+        if (confirmedOrderId) {
+          trackPurchase({
+            orderId: confirmedOrderId,
+            cart: updatedCart,
+            customer: {
+              ...addressPayload,
+              ...(result.billing_address || {}),
+              email: result.billing_address?.email || addressPayload.email,
+              phone: result.billing_address?.phone || addressPayload.phone,
+            },
+            currency: updatedCart.totals?.currency_code || 'USD',
+          });
+        }
         setOrderConfirmation(result);
         onOrderCompleted();
       } else {

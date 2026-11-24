@@ -9,6 +9,10 @@ import {
   handleMetaRemoveProductRequest,
   handleMetaSyncProductRequest,
 } from './server/metaCatalog.ts';
+import {
+  handleMetaCapiConfigRequest,
+  handleMetaCapiEventRequest,
+} from './server/metaCapi.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,6 +36,10 @@ async function startServer() {
   // Meta Commerce Catalog & Meta Shop server-side sync endpoints
   app.post('/api/meta/sync-product', handleMetaSyncProductRequest);
   app.post('/api/meta/remove-product', handleMetaRemoveProductRequest);
+
+  // Meta Conversions API (CAPI) event tracking & public Pixel config endpoint
+  app.get('/api/meta/capi', handleMetaCapiConfigRequest);
+  app.post('/api/meta/capi', handleMetaCapiEventRequest);
 
   // Mount shared API router (identical behavior across AI Studio, Node, and Vercel)
   app.use('/api', createApiRouter());

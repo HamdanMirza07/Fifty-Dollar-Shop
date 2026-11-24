@@ -57,6 +57,11 @@ import {
   parseMetaCheckoutQuery,
   resolveMetaCheckoutItems,
 } from './utils/metaCheckoutParams';
+import {
+  initMetaPixel,
+  trackAddToCart,
+  trackViewContent,
+} from './services/metaTracking';
 
 function parseRouteFromLocation(): {
   page: AppPage;
@@ -219,6 +224,26 @@ export default function App() {
 
   const catalogRef = useRef<HTMLDivElement | null>(null);
   const newArrivalRef = useRef<HTMLDivElement | null>(null);
+  const lastViewedProductIdRef = useRef<number | null>(null);
+
+  // Initialize Meta Pixel & capture _fbc on storefront sessions (never inside Admin panel)
+  useEffect(() => {
+    if (currentPage !== 'admin') {
+      initMetaPixel();
+    }
+  }, [currentPage]);
+
+  // Fire deduplicated ViewContent (Browser Pixel + Server CAPI) when viewing a product
+  useEffect(() => {
+    if (currentPage === 'product' && selectedProduct) {
+      if (lastViewedProductIdRef.current !== selectedProduct.id) {
+        lastViewedProductIdRef.current = selectedProduct.id;
+        trackViewContent(selectedProduct);
+      }
+    } else if (currentPage !== 'product') {
+      lastViewedProductIdRef.current = null;
+    }
+  }, [currentPage, selectedProduct]);
 
   const pushPath = useCallback((nextPath: string) => {
     if (window.location.pathname !== nextPath) {
@@ -865,6 +890,7 @@ export default function App() {
         resolvedAttrs
       );
       setCart(updatedCart);
+      trackAddToCart(product, quantity, targetId ?? undefined);
       setJustAddedProductId(product.id);
       setCartOpen(true);
       window.setTimeout(() => {
@@ -897,6 +923,7 @@ export default function App() {
 
       const updatedCart = await addWcCartItem(targetId, quantity, variationAttrs);
       setCart(updatedCart);
+      trackAddToCart(product, quantity, variationId);
       setCartOpen(false);
       triggerPageTransition('checkout');
       setCurrentPage('checkout');
